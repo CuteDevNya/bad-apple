@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#050505">
+<title>Bad Apple</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #050505;
+  }
+  body {
+    position: fixed;
+    inset: 0;
+    color: white;
+    font-family: system-ui, sans-serif;
+    user-select: none;
+  }
+  #visual {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    overflow: hidden;
+    background: #050505;
+  }
+  .tile {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    place-items: center;
+    opacity: 0;
+    contain: strict;
+    will-change: opacity;
+  }
+  .tile::before {
+    content: "";
+    width: var(--w);
+    height: var(--h);
+    display: block;
+    background: var(--color);
+    border-radius: var(--radius, 1px);
+    transform: rotate(var(--rotation));
+    box-shadow: 0 0 4px var(--glow, transparent);
+  }
+  .tile[data-shape="circle"]::before { border-radius: 50%; }
+  .tile[data-shape="diamond"]::before {
+    clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+    border-radius: 0;
+  }
+  .tile[data-shape="triangle"]::before {
+    clip-path: polygon(50% 0, 100% 100%, 0 100%);
+    border-radius: 0;
+  }
+  .tile[data-shape="bar"]::before { border-radius: 999px; }
+  .tile[data-shape="ring"]::before {
+    background: transparent;
+    border: 1px solid var(--color);
+    border-radius: 50%;
+    box-shadow: none;
+  }
+  .tile[data-shape="cut"]::before {
+    clip-path: polygon(12% 0, 100% 0, 84% 100%, 0 82%);
+    border-radius: 0;
+  }
+  #video {
+    position: fixed;
+    width: 1px;
+    height: 1px;
+    left: -10px;
+    top: -10px;
+    opacity: 0;
+    pointer-events: none;
+  }
+  #audioGate {
+    position: fixed;
+    inset: 0;
+    z-index: 5;
+    display: none;
+    place-items: center;
+    pointer-events: none;
+  }
+  #audioGate.visible { display: grid; }
+  #startButton {
+    pointer-events: auto;
+    appearance: none;
+    border: 1px solid #ffffff6b;
+    border-radius: 999px;
+    padding: 13px 19px;
+    background: #101014d9;
+    color: #fff;
+    font: 650 14px/1.2 system-ui, sans-serif;
+    letter-spacing: .01em;
+    box-shadow: 0 6px 32px #0008;
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+  }
+  #startButton:hover { background: #292932ee; }
+  #missing {
+    position: fixed;
+    z-index: 6;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    display: none;
+    max-width: calc(100vw - 28px);
+    padding: 9px 13px;
+    color: #d7d7df;
+    background: #17171de8;
+    border: 1px solid #ffffff22;
+    border-radius: 10px;
+    font: 12px/1.4 system-ui, sans-serif;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <main id="visual" aria-label="Bad Apple animation"></main>
+  <video id="video" playsinline preload="auto" loop></video>
+  <div id="audioGate" role="dialog" aria-label="Wiedergabe starten">
+    <button id="startButton" type="button">▶ Start Bad Apple mit Ton</button>
+  </div>
+  <div id="missing">Videodatei nicht gefunden. Lege <b>bad_apple.mp4</b> neben die index.html ins Repository.</div>
+
+<script>
+(() => {
+  "use strict";
+  const visual = document.getElementById("visual");
+  const video = document.getElementById("video");
+  const gate = document.getElementById("audioGate");
+  const startButton = document.getElementById("startButton");
+  const missing = document.getElementById("missing");
+
+  // Put the video in the repository root. These common spellings are tried in order.
+  const videoFiles = [
+    "bad_apple.mp4",
+    "bad-apple.mp4",
+    "badapple.mp4",
+    "Bad Apple.mp4",
+    "Bad_Apple.mp4",
+    "video.mp4"
+  ];
+  const colors = [
+    "#f3f3f5", "#e3e4e8", "#c7c8ce", "#a5a7b1",
+    "#f0b5dd", "#b9c5ff", "#a6e9e0", "#f1d2a2", "#cbb9ff"
+  ];
+  const shapes = ["square", "square", "soft", "circle", "diamond", "triangle", "bar", "ring", "cut"];
+  let sourceIndex = 0;
+  let started = false;
+  let gridColumns = 0;
+  let gridRows = 0;
+  let tiles = [];
+  let animationToken = 0;
+  let lastVideoTime = -1;
+  const sampler = document.createElement("canvas");
+  const context = sampler.getContext("2d", { willReadFrequently: true });
+
+  function showGate(text) {
+    startButton.textContent = text;
+    gate.classList.add("visible");
+  }
+  function hideGate() {
+    gate.classList.remove("visible");
+  }
+  function loadNextVideo() {
+    if (sourceIndex >= videoFiles.length) {
+      missing.style.display = "block";
+      showGate("Videodatei fehlt");
+      startButton.disabled = true;
+      startButton.style.cursor = "default";
+      return;
+    }
+    const file = videoFiles[sourceIndex++];
+    video.src = file;
+    video.load();
+  }
+  function choose(array) {
+    return array[Math.floor(Math.random() * array.length)];
+  }
+  function resizeGrid() {
+    if (!video.videoWidth || !video.videoHeight) return;
+    const nextColumns = Math.max(30, Math.min(76, Math.floor(window.innerWidth / 19)));
+    const aspect = video.videoWidth / video.videoHeight;
+    const nextRows = Math.max(16, Math.round(nextColumns / aspect));
+    if (nextColumns === gridColumns && nextRows === gridRows) return;
+    gridColumns = nextColumns;
+    gridRows = nextRows;
+    sampler.width = gridColumns;
+    sampler.height = gridRows;
+    visual.style.gridTemplateColumns = "repeat(" + gridColumns + ", minmax(0, 1fr))";
+    visual.style.gridTemplateRows = "repeat(" + gridRows + ", minmax(0, 1fr))";
+    const fragment = document.createDocumentFragment();
+    tiles = [];
+    for (let i = 0; i < gridColumns * gridRows; i++) {
+      const tile = document.createElement("div");
+      const color = Math.random() < 0.26 ? choose(colors.slice(4)) : choose(colors.slice(0, 4));
+      const shape = choose(shapes);
+      const width = 48 + Math.random() * 48;
+      const height = 48 + Math.random() * 48;
+      tile.className = "tile";
+      tile.dataset.shape = shape;
+      tile.style.setProperty("--color", color);
+      tile.style.setProperty("--w", width.toFixed(1) + "%");
+      tile.style.setProperty("--h", height.toFixed(1) + "%");
+      tile.style.setProperty("--rotation", (Math.random() * 70 - 35).toFixed(1) + "deg");
+      tile.style.setProperty("--radius", (Math.random() * 5).toFixed(1) + "px");
+      tile.style.setProperty("--glow", Math.random() < 0.14 ? color + "55" : "transparent");
+      tiles.push(tile);
+      fragment.appendChild(tile);
+    }
+    visual.replaceChildren(fragment);
+    lastVideoTime = -1;
+    renderFrame();
+  }
+  function renderFrame() {
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+        !video.videoWidth || !tiles.length || context === null) return;
+    if (lastVideoTime === video.currentTime) return;
+    lastVideoTime = video.currentTime;
+    try {
+      context.drawImage(video, 0, 0, gridColumns, gridRows);
+      const pixels = context.getImageData(0, 0, gridColumns, gridRows).data;
+      // Dark areas stay empty; bright areas become the random HTML shapes.
+      for (let i = 0, p = 0; i < tiles.length; i++, p += 4) {
+        const luminance = pixels[p] * 0.2126 + pixels[p + 1] * 0.7152 + pixels[p + 2] * 0.0722;
+        const level = Math.max(0, Math.min(1, (luminance - 38) / 205));
+        const alpha = level < 0.035 ? 0 : Math.min(0.98, Math.pow(level, 0.72) * 0.96);
+        tiles[i].style.opacity = alpha.toFixed(3);
+      }
+    } catch (error) {
+      console.error("Could not sample video frame:", error);
+    }
+  }
+  function stopAnimation() { animationToken++; }
+  function animate() {
+    stopAnimation();
+    const token = animationToken;
+    if (typeof video.requestVideoFrameCallback === "function") {
+      const frame = () => {
+        if (token !== animationToken || video.paused || video.ended) return;
+        renderFrame();
+        video.requestVideoFrameCallback(frame);
+      };
+      video.requestVideoFrameCallback(frame);
+    } else {
+      const frame = () => {
+        if (token !== animationToken || video.paused || video.ended) return;
+        renderFrame();
+        requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+    }
+  }
+  async function beginAutomatically() {
+    if (started) return;
+    started = true;
+    // Try normal autoplay with sound first.
+    video.muted = false;
+    video.volume = 1;
+    try {
+      await video.play();
+      hideGate();
+      animate();
+    } catch (_) {
+      // Most browsers block sound autoplay. The video still starts silently,
+      // and a single unobtrusive button lets the visitor enable audio.
+      video.muted = true;
+      try {
+        await video.play();
+        animate();
+        showGate("🔊 Ton aktivieren");
+      } catch (_) {
+        showGate("▶ Start Bad Apple mit Ton");
+      }
+    }
+  }
+
+  startButton.addEventListener("click", async () => {
+    if (startButton.disabled) return;
+    video.muted = false;
+    video.volume = 1;
+    try {
+      await video.play();
+      hideGate();
+      animate();
+    } catch (error) {
+      // If playback still needs a click, preserve the button as a retry.
+      startButton.textContent = "▶ Wiedergabe starten";
+      console.warn("Playback still blocked:", error);
+    }
+  });
+  video.addEventListener("error", () => {
+    if (sourceIndex < videoFiles.length) loadNextVideo();
+    else {
+      missing.style.display = "block";
+      showGate("Videodatei fehlt");
+      startButton.disabled = true;
+    }
+  });
+  video.addEventListener("loadedmetadata", () => {
+    missing.style.display = "none";
+    resizeGrid();
+    beginAutomatically();
+  });
+  video.addEventListener("loadeddata", renderFrame);
+  video.addEventListener("play", animate);
+  video.addEventListener("seeked", () => { lastVideoTime = -1; renderFrame(); });
+  video.addEventListener("timeupdate", renderFrame);
+  video.addEventListener("ended", () => { lastVideoTime = -1; renderFrame(); });
+  window.addEventListener("resize", resizeGrid);
+
+  loadNextVideo();
+})();
+</script>
+</body>
+</html>
