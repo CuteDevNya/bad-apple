@@ -227,8 +227,10 @@
 
     // Random size and scattered position are fixed for the entire video.
     // The silhouette controls only visibility, scale and contour rotation.
-    const width = cellWidth * (isEdgePiece ? rand(0.34, 0.66) : rand(0.42, 1.42));
-    const height = cellHeight * (isEdgePiece ? rand(0.34, 0.68) : rand(0.40, 1.35));
+    // Fine-detail pieces are deliberately tiny so narrow silhouette features
+    // don't get covered by one oversized control.
+    const width = cellWidth * (isEdgePiece ? rand(0.18, 0.42) : rand(0.42, 1.42));
+    const height = cellHeight * (isEdgePiece ? rand(0.18, 0.42) : rand(0.40, 1.35));
     element.style.left = x.toFixed(3) + "px";
     element.style.top = y.toFixed(3) + "px";
     element.style.width = width.toFixed(2) + "px";
@@ -378,8 +380,10 @@
     const cellWidth = frameWidth / columns;
     const cellHeight = frameHeight / rows;
 
-    sampleWidth = clamp(Math.round(frameWidth / 8), 96, 180);
-    sampleHeight = Math.max(48, Math.round(sampleWidth / aspect));
+    // Higher sampling resolution retains thin lines, small objects and narrow gaps.
+    // It's still a small image compared with the video, keeping per-frame work bounded.
+    sampleWidth = clamp(Math.round(frameWidth / 3.5), 240, 360);
+    sampleHeight = Math.max(96, Math.round(sampleWidth / aspect));
     sampler.width = sampleWidth;
     sampler.height = sampleHeight;
     luminance = new Uint8Array(sampleWidth * sampleHeight);
@@ -404,7 +408,7 @@
     // It is intentionally modest so it improves definition without adding much lag.
     // Modest extra contour layer: enough small objects to close visual gaps,
     // without returning to thousands of animated DOM nodes.
-    const edgeCount = clamp(Math.round(targetCount * 0.11), 36, 76);
+    const edgeCount = clamp(Math.round(targetCount * 0.16), 64, 132);
     for (let i = 0; i < edgeCount; i++) {
       const startX = rand(0, frameWidth);
       const startY = rand(0, frameHeight);
@@ -506,15 +510,15 @@
       // Smaller spatial bins create more candidate points around the outline.
       // Candidates are later sampled across the whole image, not just from the
       // first bins in top-left-to-bottom-right order.
-      const binColumns = 16;
-      const binRows = 10;
+      const binColumns = 22;
+      const binRows = 14;
       const bestByBin = new Array(binColumns * binRows).fill(null);
       for (let sy = 2; sy < sampleHeight - 2; sy += 2) {
         for (let sx = 2; sx < sampleWidth - 2; sx += 2) {
           const gx = at(sx + 1, sy) - at(sx - 1, sy);
           const gy = at(sx, sy + 1) - at(sx, sy - 1);
           const strength = Math.sqrt(gx * gx + gy * gy);
-          if (strength < 48) continue;
+          if (strength < 36) continue;
           const binX = Math.min(binColumns - 1, Math.floor(sx / sampleWidth * binColumns));
           const binY = Math.min(binRows - 1, Math.floor(sy / sampleHeight * binRows));
           const binIndex = binY * binColumns + binX;
@@ -555,8 +559,11 @@
         const y = candidate.y / maxY * frameHeight;
         const targetAngle = Math.atan2(candidate.gy, candidate.gx) * 180 / Math.PI + 90;
         const angle = targetAngle + piece.baseRotation * 0.22;
-        const scale = piece.baseScale * (0.82 + Math.min(1, candidate.strength / 255) * 0.22);
-        const opacity = clamp(0.40 + (candidate.strength - 48) / 220, 0.40, 0.84);
+        // Smaller features get a crisp but restrained boost: fine edges become
+        // visible without turning the entire image into a bright outline.
+        const fineDetailBoost = candidate.strength < 90 ? 1.12 : 1;
+        const scale = piece.baseScale * (0.80 + Math.min(1, candidate.strength / 255) * 0.20);
+        const opacity = clamp((0.38 + (candidate.strength - 36) / 230) * fineDetailBoost, 0.38, 0.82);
 
         if (Math.abs(x - piece.lastLeft) > 0.8 || Math.abs(y - piece.lastTop) > 0.8) {
           element.style.left = x.toFixed(1) + "px";
