@@ -373,17 +373,18 @@
     frame.style.height = frameHeight + "px";
     frame.style.aspectRatio = aspect;
 
-    // About 600–700 items on desktop, rather than several thousand.
-    const targetCount = clamp(Math.round((frameWidth * frameHeight) / 2100), 280, 680);
+    // Slightly denser DOM field for finer shapes, while keeping a hard cap
+    // so native-resolution sampling doesn't make the page needlessly heavy.
+    const targetCount = clamp(Math.round((frameWidth * frameHeight) / 1500), 420, 1100);
     const columns = Math.max(1, Math.round(Math.sqrt(targetCount * aspect)));
     const rows = Math.max(1, Math.ceil(targetCount / columns));
     const cellWidth = frameWidth / columns;
     const cellHeight = frameHeight / rows;
 
-    // Higher sampling resolution retains thin lines, small objects and narrow gaps.
-    // It's still a small image compared with the video, keeping per-frame work bounded.
-    sampleWidth = clamp(Math.round(frameWidth / 3.5), 240, 360);
-    sampleHeight = Math.max(96, Math.round(sampleWidth / aspect));
+    // Sample at the video's exact native pixel dimensions. This preserves tiny
+    // features that disappear when the source is first reduced to a thumbnail.
+    sampleWidth = video.videoWidth;
+    sampleHeight = video.videoHeight;
     sampler.width = sampleWidth;
     sampler.height = sampleHeight;
     luminance = new Uint8Array(sampleWidth * sampleHeight);
@@ -408,7 +409,7 @@
     // It is intentionally modest so it improves definition without adding much lag.
     // Modest extra contour layer: enough small objects to close visual gaps,
     // without returning to thousands of animated DOM nodes.
-    const edgeCount = clamp(Math.round(targetCount * 0.16), 64, 132);
+    const edgeCount = clamp(Math.round(targetCount * 0.16), 72, 180);
     for (let i = 0; i < edgeCount; i++) {
       const startX = rand(0, frameWidth);
       const startY = rand(0, frameHeight);
@@ -454,8 +455,10 @@
       for (const piece of pieces) {
         const sx = Math.round(piece.x * maxX);
         const sy = Math.round(piece.y * maxY);
-        const rx = Math.max(1, Math.round(piece.width * sampleWidth * 0.28));
-        const ry = Math.max(1, Math.round(piece.height * sampleHeight * 0.28));
+        // Use tighter samples around each object's anchor to avoid blurring away
+        // very narrow features by averaging pixels from too far away.
+        const rx = Math.max(1, Math.round(piece.width * sampleWidth * 0.16));
+        const ry = Math.max(1, Math.round(piece.height * sampleHeight * 0.16));
 
         // Five-point coverage lets larger pieces straddle a silhouette edge.
         const points = [
@@ -510,15 +513,15 @@
       // Smaller spatial bins create more candidate points around the outline.
       // Candidates are later sampled across the whole image, not just from the
       // first bins in top-left-to-bottom-right order.
-      const binColumns = 22;
-      const binRows = 14;
+      const binColumns = 32;
+      const binRows = 24;
       const bestByBin = new Array(binColumns * binRows).fill(null);
       for (let sy = 2; sy < sampleHeight - 2; sy += 2) {
         for (let sx = 2; sx < sampleWidth - 2; sx += 2) {
           const gx = at(sx + 1, sy) - at(sx - 1, sy);
           const gy = at(sx, sy + 1) - at(sx, sy - 1);
           const strength = Math.sqrt(gx * gx + gy * gy);
-          if (strength < 36) continue;
+          if (strength < 30) continue;
           const binX = Math.min(binColumns - 1, Math.floor(sx / sampleWidth * binColumns));
           const binY = Math.min(binRows - 1, Math.floor(sy / sampleHeight * binRows));
           const binIndex = binY * binColumns + binX;
@@ -561,9 +564,9 @@
         const angle = targetAngle + piece.baseRotation * 0.22;
         // Smaller features get a crisp but restrained boost: fine edges become
         // visible without turning the entire image into a bright outline.
-        const fineDetailBoost = candidate.strength < 90 ? 1.12 : 1;
-        const scale = piece.baseScale * (0.80 + Math.min(1, candidate.strength / 255) * 0.20);
-        const opacity = clamp((0.38 + (candidate.strength - 36) / 230) * fineDetailBoost, 0.38, 0.82);
+        const fineDetailBoost = candidate.strength < 100 ? 1.16 : 1;
+        const scale = piece.baseScale * (0.78 + Math.min(1, candidate.strength / 255) * 0.22);
+        const opacity = clamp((0.40 + (candidate.strength - 30) / 230) * fineDetailBoost, 0.40, 0.84);
 
         if (Math.abs(x - piece.lastLeft) > 0.8 || Math.abs(y - piece.lastTop) > 0.8) {
           element.style.left = x.toFixed(1) + "px";
