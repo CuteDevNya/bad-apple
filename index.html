@@ -402,7 +402,9 @@
 
     // A small extra layer adds detail around the silhouette's outline.
     // It is intentionally modest so it improves definition without adding much lag.
-    const edgeCount = clamp(Math.round(targetCount * 0.055), 18, 36);
+    // Modest extra contour layer: enough small objects to close visual gaps,
+    // without returning to thousands of animated DOM nodes.
+    const edgeCount = clamp(Math.round(targetCount * 0.11), 36, 76);
     for (let i = 0; i < edgeCount; i++) {
       const startX = rand(0, frameWidth);
       const startY = rand(0, frameHeight);
@@ -501,15 +503,18 @@
       // Find contour pixels. Keep the strongest edge point in each spatial
       // region, so the small extra elements follow the silhouette instead of
       // bunching together in one corner. Only a few dozen candidates are used.
-      const binColumns = 10;
-      const binRows = 6;
+      // Smaller spatial bins create more candidate points around the outline.
+      // Candidates are later sampled across the whole image, not just from the
+      // first bins in top-left-to-bottom-right order.
+      const binColumns = 16;
+      const binRows = 10;
       const bestByBin = new Array(binColumns * binRows).fill(null);
       for (let sy = 2; sy < sampleHeight - 2; sy += 2) {
         for (let sx = 2; sx < sampleWidth - 2; sx += 2) {
           const gx = at(sx + 1, sy) - at(sx - 1, sy);
           const gy = at(sx, sy + 1) - at(sx, sy - 1);
           const strength = Math.sqrt(gx * gx + gy * gy);
-          if (strength < 62) continue;
+          if (strength < 48) continue;
           const binX = Math.min(binColumns - 1, Math.floor(sx / sampleWidth * binColumns));
           const binY = Math.min(binRows - 1, Math.floor(sy / sampleHeight * binRows));
           const binIndex = binY * binColumns + binX;
@@ -524,10 +529,17 @@
         if (candidate) edgeCandidates.push(candidate);
       }
 
+      // Uniformly cover the full list of available contour areas. Previously,
+      // assigning candidate[i] directly meant that only the first (top-left)
+      // regions often received the extra details, leaving gaps elsewhere.
+      const candidateCount = edgeCandidates.length;
       for (let i = 0; i < edgePieces.length; i++) {
         const piece = edgePieces[i];
         const element = piece.element;
-        const candidate = edgeCandidates[i];
+        const candidateIndex = candidateCount
+          ? Math.min(candidateCount - 1, Math.floor((i + 0.5) * candidateCount / edgePieces.length))
+          : -1;
+        const candidate = candidateIndex >= 0 ? edgeCandidates[candidateIndex] : null;
 
         if (!candidate) {
           if (piece.lastOpacity !== 0) {
@@ -544,7 +556,7 @@
         const targetAngle = Math.atan2(candidate.gy, candidate.gx) * 180 / Math.PI + 90;
         const angle = targetAngle + piece.baseRotation * 0.22;
         const scale = piece.baseScale * (0.82 + Math.min(1, candidate.strength / 255) * 0.22);
-        const opacity = clamp(0.34 + (candidate.strength - 62) / 240, 0.34, 0.78);
+        const opacity = clamp(0.40 + (candidate.strength - 48) / 220, 0.40, 0.84);
 
         if (Math.abs(x - piece.lastLeft) > 0.8 || Math.abs(y - piece.lastTop) > 0.8) {
           element.style.left = x.toFixed(1) + "px";
