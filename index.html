@@ -184,6 +184,7 @@
   let started = false;
   let foregroundIsDark = true;
   let pieces = [];
+  let edgePieces = [];
   let animationToken = 0;
   let lastVideoTime = -1;
   let resizeTimer = 0;
@@ -219,15 +220,15 @@
     video.load();
   }
 
-  function makeElement(tag, x, y, cellWidth, cellHeight) {
+  function makeElement(tag, x, y, cellWidth, cellHeight, isEdgePiece = false) {
     const element = document.createElement(tag);
     element.className = "piece";
     element.setAttribute("aria-hidden", "true");
 
     // Random size and scattered position are fixed for the entire video.
     // The silhouette controls only visibility, scale and contour rotation.
-    const width = cellWidth * rand(0.42, 1.42);
-    const height = cellHeight * rand(0.40, 1.35);
+    const width = cellWidth * (isEdgePiece ? rand(0.34, 0.66) : rand(0.42, 1.42));
+    const height = cellHeight * (isEdgePiece ? rand(0.34, 0.68) : rand(0.40, 1.35));
     element.style.left = x.toFixed(3) + "px";
     element.style.top = y.toFixed(3) + "px";
     element.style.width = width.toFixed(2) + "px";
@@ -340,7 +341,7 @@
     }
 
     const baseRotation = rand(-32, 32);
-    const baseScale = rand(0.65, 1.28);
+    const baseScale = isEdgePiece ? rand(0.72, 1.02) : rand(0.65, 1.28);
     const rotation = baseRotation.toFixed(2);
     const scale = baseScale.toFixed(3);
     style.transform = "translate(-50%, -50%) rotate(" + rotation + "deg) scale(" + scale + ")";
@@ -354,7 +355,10 @@
       baseScale,
       lastOpacity: -1,
       lastAngle: NaN,
-      lastScale: NaN
+      lastScale: NaN,
+      lastLeft: x,
+      lastTop: y,
+      isEdgePiece
     };
   }
 
@@ -382,6 +386,7 @@
 
     const fragment = document.createDocumentFragment();
     pieces = [];
+    edgePieces = [];
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < columns; col++) {
         if (pieces.length >= targetCount) break;
@@ -394,6 +399,18 @@
         fragment.appendChild(piece.element);
       }
     }
+
+    // A small extra layer adds detail around the silhouette's outline.
+    // It is intentionally modest so it improves definition without adding much lag.
+    const edgeCount = clamp(Math.round(targetCount * 0.055), 18, 36);
+    for (let i = 0; i < edgeCount; i++) {
+      const startX = rand(0, frameWidth);
+      const startY = rand(0, frameHeight);
+      const micro = makeElement(choose(elementTags), startX, startY, cellWidth, cellHeight, true);
+      edgePieces.push(micro);
+      fragment.appendChild(micro.element);
+    }
+
     frame.replaceChildren(fragment);
     lastVideoTime = -1;
     renderFrame();
@@ -474,6 +491,76 @@
         if (!Number.isFinite(piece.lastAngle) ||
             Math.abs(angle - piece.lastAngle) > 1.8 ||
             Math.abs(scale - piece.lastScale) > 0.025) {
+          element.style.transform =
+            "translate(-50%, -50%) rotate(" + angle.toFixed(1) + "deg) scale(" + scale.toFixed(3) + ")";
+          piece.lastAngle = angle;
+          piece.lastScale = scale;
+        }
+      }
+
+      // Find contour pixels. Keep the strongest edge point in each spatial
+      // region, so the small extra elements follow the silhouette instead of
+      // bunching together in one corner. Only a few dozen candidates are used.
+      const binColumns = 10;
+      const binRows = 6;
+      const bestByBin = new Array(binColumns * binRows).fill(null);
+      for (let sy = 2; sy < sampleHeight - 2; sy += 2) {
+        for (let sx = 2; sx < sampleWidth - 2; sx += 2) {
+          const gx = at(sx + 1, sy) - at(sx - 1, sy);
+          const gy = at(sx, sy + 1) - at(sx, sy - 1);
+          const strength = Math.sqrt(gx * gx + gy * gy);
+          if (strength < 62) continue;
+          const binX = Math.min(binColumns - 1, Math.floor(sx / sampleWidth * binColumns));
+          const binY = Math.min(binRows - 1, Math.floor(sy / sampleHeight * binRows));
+          const binIndex = binY * binColumns + binX;
+          const previous = bestByBin[binIndex];
+          if (!previous || strength > previous.strength) {
+            bestByBin[binIndex] = { x: sx, y: sy, gx, gy, strength };
+          }
+        }
+      }
+      const edgeCandidates = [];
+      for (const candidate of bestByBin) {
+        if (candidate) edgeCandidates.push(candidate);
+      }
+
+      for (let i = 0; i < edgePieces.length; i++) {
+        const piece = edgePieces[i];
+        const element = piece.element;
+        const candidate = edgeCandidates[i];
+
+        if (!candidate) {
+          if (piece.lastOpacity !== 0) {
+            element.style.opacity = "0";
+            piece.lastOpacity = 0;
+          }
+          continue;
+        }
+
+        // Keep these particles smaller than the main scatter and align them
+        // mostly to the contour tangent. A little randomized angle remains.
+        const x = candidate.x / maxX * frameWidth;
+        const y = candidate.y / maxY * frameHeight;
+        const targetAngle = Math.atan2(candidate.gy, candidate.gx) * 180 / Math.PI + 90;
+        const angle = targetAngle + piece.baseRotation * 0.22;
+        const scale = piece.baseScale * (0.82 + Math.min(1, candidate.strength / 255) * 0.22);
+        const opacity = clamp(0.34 + (candidate.strength - 62) / 240, 0.34, 0.78);
+
+        if (Math.abs(x - piece.lastLeft) > 0.8 || Math.abs(y - piece.lastTop) > 0.8) {
+          element.style.left = x.toFixed(1) + "px";
+          element.style.top = y.toFixed(1) + "px";
+          piece.lastLeft = x;
+          piece.lastTop = y;
+          piece.x = x / frameWidth;
+          piece.y = y / frameHeight;
+        }
+        if (Math.abs(opacity - piece.lastOpacity) > 0.035) {
+          element.style.opacity = opacity.toFixed(2);
+          piece.lastOpacity = opacity;
+        }
+        if (!Number.isFinite(piece.lastAngle) ||
+            Math.abs(angle - piece.lastAngle) > 2.5 ||
+            Math.abs(scale - piece.lastScale) > 0.035) {
           element.style.transform =
             "translate(-50%, -50%) rotate(" + angle.toFixed(1) + "deg) scale(" + scale.toFixed(3) + ")";
           piece.lastAngle = angle;
