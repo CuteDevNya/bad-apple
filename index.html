@@ -21,52 +21,45 @@
     font-family: system-ui, sans-serif;
     user-select: none;
   }
+  /* The video-shaped field is centered and never stretched to fill the screen. */
   #visual {
     position: absolute;
     inset: 0;
     display: grid;
+    place-items: center;
     overflow: hidden;
     background: #050505;
   }
-  .tile {
+  #frame {
     position: relative;
+    flex: none;
+    overflow: hidden;
+    display: grid;
+    background: #050505;
+    isolation: isolate;
+  }
+  .tile {
     min-width: 0;
     min-height: 0;
     display: grid;
     place-items: center;
+    overflow: hidden;
     opacity: 0;
     contain: strict;
+    pointer-events: none;
     will-change: opacity;
   }
-  .tile::before {
-    content: "";
-    width: var(--w);
-    height: var(--h);
-    display: block;
-    background: var(--color);
-    border-radius: var(--radius, 1px);
-    transform: rotate(var(--rotation));
-    box-shadow: 0 0 4px var(--glow, transparent);
-  }
-  .tile[data-shape="circle"]::before { border-radius: 50%; }
-  .tile[data-shape="diamond"]::before {
-    clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
-    border-radius: 0;
-  }
-  .tile[data-shape="triangle"]::before {
-    clip-path: polygon(50% 0, 100% 100%, 0 100%);
-    border-radius: 0;
-  }
-  .tile[data-shape="bar"]::before { border-radius: 999px; }
-  .tile[data-shape="ring"]::before {
-    background: transparent;
-    border: 1px solid var(--color);
-    border-radius: 50%;
-    box-shadow: none;
-  }
-  .tile[data-shape="cut"]::before {
-    clip-path: polygon(12% 0, 100% 0, 84% 100%, 0 82%);
-    border-radius: 0;
+  .tile > * {
+    min-width: 0;
+    min-height: 0;
+    max-width: 100%;
+    max-height: 100%;
+    margin: 0;
+    overflow: hidden;
+    line-height: 1;
+    box-sizing: border-box;
+    text-overflow: clip;
+    white-space: nowrap;
   }
   #video {
     position: fixed;
@@ -120,7 +113,9 @@
 </style>
 </head>
 <body>
-  <main id="visual" aria-label="Bad Apple animation"></main>
+  <main id="visual" aria-label="Bad Apple animation">
+    <div id="frame" aria-hidden="true"></div>
+  </main>
   <video id="video" playsinline preload="auto" loop></video>
   <div id="audioGate" role="dialog" aria-label="Wiedergabe starten">
     <button id="startButton" type="button">▶ Start Bad Apple mit Ton</button>
@@ -131,12 +126,12 @@
 (() => {
   "use strict";
   const visual = document.getElementById("visual");
+  const frame = document.getElementById("frame");
   const video = document.getElementById("video");
   const gate = document.getElementById("audioGate");
   const startButton = document.getElementById("startButton");
   const missing = document.getElementById("missing");
 
-  // Put the video in the repository root. These common spellings are tried in order.
   const videoFiles = [
     "bad_apple.mp4",
     "bad-apple.mp4",
@@ -145,11 +140,30 @@
     "Bad_Apple.mp4",
     "video.mp4"
   ];
-  const colors = [
-    "#f3f3f5", "#e3e4e8", "#c7c8ce", "#a5a7b1",
-    "#f0b5dd", "#b9c5ff", "#a6e9e0", "#f1d2a2", "#cbb9ff"
+
+  // Genuine HTML elements, not CSS polygons pretending to be elements.
+  const elementTags = [
+    "button", "input", "textarea", "a", "h1", "h2", "h3", "p", "span",
+    "div", "progress", "meter", "hr", "select", "label", "small", "code",
+    "pre", "blockquote", "table", "kbd", "mark", "output", "ul", "ol",
+    "li", "summary", "samp", "strong", "em", "del", "ins", "sup", "sub",
+    "fieldset", "legend", "article", "aside", "nav", "header", "footer",
+    "section", "figure", "figcaption", "time", "data", "var", "cite", "q",
+    "address", "dl", "dt", "dd", "ruby", "bdi", "abbr", "dfn", "u", "s",
+    "i", "b", "div", "span", "form", "caption", "col", "wbr", "img"
   ];
-  const shapes = ["square", "square", "soft", "circle", "diamond", "triangle", "bar", "ring", "cut"];
+  const colors = [
+    "#f8f8fc", "#e6e7ee", "#c9cbd6", "#aeb2c2", "#f3b8df",
+    "#c3ceff", "#a7eddf", "#f5d6a5", "#d2bcff", "#a8dafa",
+    "#e6f2b4", "#f5a8ae", "#b5b7ff", "#9fe5ed", "#fff0f7"
+  ];
+  const textBits = [
+    "BAD", "APPLE", "01", "OK", "BTN", "0x", "404", "HI", "?!", "///",
+    "✦", "♡", "◌", "→", "☻", "GO", "null", "true", "false", "△", "###",
+    "CLICK", "TEXT", "on", "off", "0101", "✧", "{}", "()", "[]", "★", "≋"
+  ];
+  const borderStyles = ["solid", "solid", "dashed", "dotted", "double", "none"];
+  const inputTypes = ["text", "button", "checkbox", "submit", "search", "radio", "range"];
   let sourceIndex = 0;
   let started = false;
   let gridColumns = 0;
@@ -157,9 +171,16 @@
   let tiles = [];
   let animationToken = 0;
   let lastVideoTime = -1;
+  let resizeTimer = 0;
   const sampler = document.createElement("canvas");
   const context = sampler.getContext("2d", { willReadFrequently: true });
 
+  function choose(array) {
+    return array[Math.floor(Math.random() * array.length)];
+  }
+  function rand(min, max) {
+    return min + Math.random() * (max - min);
+  }
   function showGate(text) {
     startButton.textContent = text;
     gate.classList.add("visible");
@@ -175,45 +196,169 @@
       startButton.style.cursor = "default";
       return;
     }
-    const file = videoFiles[sourceIndex++];
-    video.src = file;
+    video.src = videoFiles[sourceIndex++];
     video.load();
   }
-  function choose(array) {
-    return array[Math.floor(Math.random() * array.length)];
+  function setRandomStyle(element, tag) {
+    const bg = choose(colors);
+    const fg = Math.random() < 0.2 ? choose(colors) : "#101116";
+    const border = choose(colors);
+    const width = rand(54, 100);
+    const height = rand(48, 100);
+    const size = rand(7, 15);
+    const radius = Math.random() < 0.7 ? rand(0, 9).toFixed(1) + "px" : rand(20, 50).toFixed(0) + "%";
+    const style = element.style;
+    style.display = "grid";
+    style.placeItems = "center";
+    style.alignContent = "center";
+    style.width = width.toFixed(1) + "%";
+    style.height = height.toFixed(1) + "%";
+    style.padding = rand(0, 3).toFixed(1) + "px";
+    style.border = rand(0, 2).toFixed(1) + "px " + choose(borderStyles) + " " + border;
+    style.borderRadius = radius;
+    style.background = Math.random() < 0.18 ? "transparent" : bg;
+    style.color = fg;
+    style.fontFamily = choose(["Arial, sans-serif", "Georgia, serif", "monospace", "system-ui, sans-serif"]);
+    style.fontSize = size.toFixed(1) + "px";
+    style.fontWeight = choose(["400", "500", "650", "800", "900"]);
+    style.fontStyle = Math.random() < 0.18 ? "italic" : "normal";
+    style.textDecoration = Math.random() < 0.16 ? "underline" : "none";
+    style.letterSpacing = rand(-0.5, 1.8).toFixed(1) + "px";
+    style.textAlign = "center";
+    style.transform = "rotate(" + rand(-32, 32).toFixed(1) + "deg)";
+    style.boxShadow = Math.random() < 0.22 ? "0 0 " + rand(1, 7).toFixed(1) + "px " + border + "88" : "none";
+    style.outline = Math.random() < 0.1 ? "1px solid " + border : "none";
+    style.opacity = "1";
+    style.appearance = "auto";
+    element.setAttribute("aria-hidden", "true");
+
+    // Native controls remain genuine browser elements, but are never clickable.
+    if (tag === "input") {
+      const type = choose(inputTypes);
+      element.type = type;
+      if (["button", "submit"].includes(type)) element.value = choose(textBits);
+      else if (["checkbox", "radio"].includes(type)) element.checked = Math.random() < 0.5;
+      else if (type === "range") { element.value = String(Math.floor(rand(0, 100))); element.min = "0"; element.max = "100"; }
+      else { element.value = choose(textBits); element.placeholder = choose(textBits); }
+    } else if (tag === "textarea") {
+      element.rows = 1;
+      element.cols = 4;
+      element.value = choose(textBits);
+    } else if (tag === "select") {
+      for (let i = 0; i < 2; i++) {
+        const option = document.createElement("option");
+        option.textContent = choose(textBits);
+        element.appendChild(option);
+      }
+    } else if (tag === "progress") {
+      element.max = 100;
+      element.value = rand(0, 100);
+    } else if (tag === "meter") {
+      element.min = 0;
+      element.max = 100;
+      element.value = rand(0, 100);
+    } else if (tag === "a") {
+      element.href = "#";
+      element.tabIndex = -1;
+    } else if (tag === "img") {
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="50" viewBox="0 0 80 50"><rect width="80" height="50" fill="' + bg + '"/><text x="40" y="32" fill="' + fg + '" font-size="21" text-anchor="middle">' + choose(["★", "✦", "?", "0", "♡", "◈"]) + '</text></svg>';
+      element.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+      element.alt = "";
+    } else if (tag === "hr") {
+      style.border = "0";
+      style.borderTop = rand(1, 4).toFixed(1) + "px " + choose(["solid", "dashed", "dotted"]) + " " + border;
+      style.height = "1px";
+      style.width = width.toFixed(1) + "%";
+      style.background = "transparent";
+    } else if (tag === "wbr") {
+      element.textContent = "";
+      style.border = "1px solid " + border;
+      style.background = bg;
+    } else if (tag === "table") {
+      const tr = document.createElement("tr");
+      const td1 = document.createElement("td");
+      const td2 = document.createElement("td");
+      td1.textContent = choose(textBits);
+      td2.textContent = choose(textBits);
+      tr.append(td1, td2);
+      element.appendChild(tr);
+      for (const cell of [td1, td2]) {
+        cell.style.border = "1px solid " + border;
+        cell.style.padding = "1px";
+      }
+    } else if (tag === "ul" || tag === "ol") {
+      const li = document.createElement("li");
+      li.textContent = choose(textBits);
+      element.appendChild(li);
+      element.style.paddingLeft = "5px";
+    } else if (tag === "dl") {
+      const dt = document.createElement("dt");
+      const dd = document.createElement("dd");
+      dt.textContent = choose(textBits);
+      dd.textContent = choose(textBits);
+      element.append(dt, dd);
+    } else if (tag === "fieldset") {
+      const legend = document.createElement("legend");
+      legend.textContent = choose(textBits);
+      element.appendChild(legend);
+    } else if (tag === "details") {
+      const summary = document.createElement("summary");
+      summary.textContent = choose(textBits);
+      element.appendChild(summary);
+      element.open = Math.random() < 0.5;
+    } else if (tag === "form") {
+      const child = document.createElement("button");
+      child.type = "button";
+      child.textContent = choose(textBits);
+      element.appendChild(child);
+    } else if (tag === "figure") {
+      const caption = document.createElement("figcaption");
+      caption.textContent = choose(textBits);
+      element.appendChild(caption);
+    } else if (tag === "ruby") {
+      element.textContent = choose(["林", "猫", "夢", "夜", "月"]);
+      const rt = document.createElement("rt");
+      rt.textContent = choose(["ba", "neko", "yume", "tsuki"]);
+      element.appendChild(rt);
+    } else if (tag === "col") {
+      style.width = width.toFixed(1) + "%";
+      style.height = "100%";
+      style.background = bg;
+    } else {
+      element.textContent = choose(textBits);
+    }
+    return element;
   }
-  function resizeGrid() {
+  function resizeFrame() {
     if (!video.videoWidth || !video.videoHeight) return;
-    const nextColumns = Math.max(30, Math.min(76, Math.floor(window.innerWidth / 19)));
     const aspect = video.videoWidth / video.videoHeight;
+    // Fit the full image inside the viewport while preserving the video's ratio.
+    const width = Math.max(1, Math.min(window.innerWidth, window.innerHeight * aspect));
+    const height = width / aspect;
+    frame.style.width = width + "px";
+    frame.style.height = height + "px";
+    frame.style.aspectRatio = aspect;
+    const nextColumns = Math.max(36, Math.min(88, Math.round(width / 20)));
     const nextRows = Math.max(16, Math.round(nextColumns / aspect));
-    if (nextColumns === gridColumns && nextRows === gridRows) return;
+    if (nextColumns === gridColumns && nextRows === gridRows && tiles.length) return;
     gridColumns = nextColumns;
     gridRows = nextRows;
     sampler.width = gridColumns;
     sampler.height = gridRows;
-    visual.style.gridTemplateColumns = "repeat(" + gridColumns + ", minmax(0, 1fr))";
-    visual.style.gridTemplateRows = "repeat(" + gridRows + ", minmax(0, 1fr))";
+    frame.style.gridTemplateColumns = "repeat(" + gridColumns + ", minmax(0, 1fr))";
+    frame.style.gridTemplateRows = "repeat(" + gridRows + ", minmax(0, 1fr))";
     const fragment = document.createDocumentFragment();
     tiles = [];
     for (let i = 0; i < gridColumns * gridRows; i++) {
       const tile = document.createElement("div");
-      const color = Math.random() < 0.26 ? choose(colors.slice(4)) : choose(colors.slice(0, 4));
-      const shape = choose(shapes);
-      const width = 48 + Math.random() * 48;
-      const height = 48 + Math.random() * 48;
       tile.className = "tile";
-      tile.dataset.shape = shape;
-      tile.style.setProperty("--color", color);
-      tile.style.setProperty("--w", width.toFixed(1) + "%");
-      tile.style.setProperty("--h", height.toFixed(1) + "%");
-      tile.style.setProperty("--rotation", (Math.random() * 70 - 35).toFixed(1) + "deg");
-      tile.style.setProperty("--radius", (Math.random() * 5).toFixed(1) + "px");
-      tile.style.setProperty("--glow", Math.random() < 0.14 ? color + "55" : "transparent");
+      const tag = choose(elementTags);
+      const element = document.createElement(tag);
+      tile.appendChild(setRandomStyle(element, tag));
       tiles.push(tile);
       fragment.appendChild(tile);
     }
-    visual.replaceChildren(fragment);
+    frame.replaceChildren(fragment);
     lastVideoTime = -1;
     renderFrame();
   }
@@ -225,10 +370,10 @@
     try {
       context.drawImage(video, 0, 0, gridColumns, gridRows);
       const pixels = context.getImageData(0, 0, gridColumns, gridRows).data;
-      // Dark areas stay empty; bright areas become the random HTML shapes.
+      // Each real HTML element is revealed according to the matching video pixel.
       for (let i = 0, p = 0; i < tiles.length; i++, p += 4) {
         const luminance = pixels[p] * 0.2126 + pixels[p + 1] * 0.7152 + pixels[p + 2] * 0.0722;
-        const level = Math.max(0, Math.min(1, (luminance - 38) / 205));
+        const level = Math.max(0, Math.min(1, (luminance - 35) / 210));
         const alpha = level < 0.035 ? 0 : Math.min(0.98, Math.pow(level, 0.72) * 0.96);
         tiles[i].style.opacity = alpha.toFixed(3);
       }
@@ -241,25 +386,24 @@
     stopAnimation();
     const token = animationToken;
     if (typeof video.requestVideoFrameCallback === "function") {
-      const frame = () => {
+      const next = () => {
         if (token !== animationToken || video.paused || video.ended) return;
         renderFrame();
-        video.requestVideoFrameCallback(frame);
+        video.requestVideoFrameCallback(next);
       };
-      video.requestVideoFrameCallback(frame);
+      video.requestVideoFrameCallback(next);
     } else {
-      const frame = () => {
+      const next = () => {
         if (token !== animationToken || video.paused || video.ended) return;
         renderFrame();
-        requestAnimationFrame(frame);
+        requestAnimationFrame(next);
       };
-      requestAnimationFrame(frame);
+      requestAnimationFrame(next);
     }
   }
   async function beginAutomatically() {
     if (started) return;
     started = true;
-    // Try normal autoplay with sound first.
     video.muted = false;
     video.volume = 1;
     try {
@@ -267,8 +411,7 @@
       hideGate();
       animate();
     } catch (_) {
-      // Most browsers block sound autoplay. The video still starts silently,
-      // and a single unobtrusive button lets the visitor enable audio.
+      // Sound autoplay is commonly blocked. Start silently and offer an audio button.
       video.muted = true;
       try {
         await video.play();
@@ -279,7 +422,6 @@
       }
     }
   }
-
   startButton.addEventListener("click", async () => {
     if (startButton.disabled) return;
     video.muted = false;
@@ -289,7 +431,6 @@
       hideGate();
       animate();
     } catch (error) {
-      // If playback still needs a click, preserve the button as a retry.
       startButton.textContent = "▶ Wiedergabe starten";
       console.warn("Playback still blocked:", error);
     }
@@ -304,7 +445,7 @@
   });
   video.addEventListener("loadedmetadata", () => {
     missing.style.display = "none";
-    resizeGrid();
+    resizeFrame();
     beginAutomatically();
   });
   video.addEventListener("loadeddata", renderFrame);
@@ -312,7 +453,10 @@
   video.addEventListener("seeked", () => { lastVideoTime = -1; renderFrame(); });
   video.addEventListener("timeupdate", renderFrame);
   video.addEventListener("ended", () => { lastVideoTime = -1; renderFrame(); });
-  window.addEventListener("resize", resizeGrid);
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resizeFrame, 80);
+  });
 
   loadNextVideo();
 })();
