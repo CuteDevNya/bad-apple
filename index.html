@@ -53,13 +53,12 @@
     white-space: nowrap;
     text-overflow: clip;
     transform-origin: center center;
-    /* A gentle, compositor-friendly response to mouse and touch movement. */
+    /* Interaction only animates nearby elements; no per-element GPU promotion. */
     translate: 0px 0px;
-    scale: 1;
-    transition: translate 85ms ease-out, scale 85ms ease-out;
+    transition: translate 55ms ease-out;
     pointer-events: none;
     opacity: 0;
-    will-change: transform, opacity, translate, scale;
+    will-change: transform, opacity;
     contain: layout style paint;
     appearance: none;
   }
@@ -197,6 +196,8 @@
   let pointerX = 0;
   let pointerY = 0;
   const interactingPieces = new Set();
+  const pointerBuckets = new Map();
+  let pointerBucketSize = 80;
   let frameWidth = 0;
   let frameHeight = 0;
   let sampleWidth = 0;
@@ -369,6 +370,9 @@
       lastScale: NaN,
       lastLeft: x,
       lastTop: y,
+      lastPointerX: NaN,
+      lastPointerY: NaN,
+      pointerActive: false,
       isEdgePiece
     };
   }
@@ -427,7 +431,11 @@
       fragment.appendChild(micro.element);
     }
 
+    // Build a static spatial index for ordinary pieces. Pointer movement only
+    // visits buckets close to the cursor instead of scanning every DOM element.
+    clearPointerField();
     frame.replaceChildren(fragment);
+    rebuildPointerBuckets();
     lastVideoTime = -1;
     renderFrame();
   }
@@ -603,68 +611,115 @@
     }
   }
 
-  // Pointer/touch interaction is independent from video rendering. It is
-  // coalesced to one requestAnimationFrame, and only nearby elements get styles
-  // updated, so moving the cursor does not force additional video processing.
+  // Pointer/touch interaction is independent from video rendering.
+  // A spatial hash limits mouse/touch work to the nearby buckets (usually tens
+  // of elements) instead of looping over every animated element on each move.
+  function rebuildPointerBuckets() {
+    pointerBuckets.clear();
+    pointerBucketSize = clamp(Math.min(frameWidth, frameHeight) * 0.12, 65, 105);
+    for (const piece of pieces) {
+      const px = piece.x * frameWidth;
+      const py = piece.y * frameHeight;
+      const bx = Math.floor(px / pointerBucketSize);
+      const by = Math.floor(py / pointerBucketSize);
+      const key = bx + "," + by;
+      let bucket = pointerBuckets.get(key);
+      if (!bucket) {
+        bucket = [];
+        pointerBuckets.set(key, bucket);
+      }
+      bucket.push(piece);
+    }
+  }
+
   function resetPointerPiece(piece) {
     if (!piece.pointerActive) return;
     piece.element.style.translate = "0px 0px";
-    piece.element.style.scale = "1";
     piece.pointerActive = false;
+    piece.lastPointerX = NaN;
+    piece.lastPointerY = NaN;
     interactingPieces.delete(piece);
+  }
+
+  function clearPointerField() {
+    for (const piece of interactingPieces) {
+      piece.element.style.translate = "0px 0px";
+      piece.pointerActive = false;
+      piece.lastPointerX = NaN;
+      piece.lastPointerY = NaN;
+    }
+    interactingPieces.clear();
   }
 
   function updatePointerField() {
     pointerFrame = 0;
     if (!pointerActive || !frameWidth || !frameHeight) {
-      for (const piece of interactingPieces) {
-        piece.element.style.translate = "0px 0px";
-        piece.element.style.scale = "1";
-        piece.pointerActive = false;
-      }
-      interactingPieces.clear();
+      clearPointerField();
       return;
     }
 
     const radius = clamp(Math.min(frameWidth, frameHeight) * 0.22, 90, 175);
     const maxShift = clamp(Math.min(frameWidth, frameHeight) * 0.027, 8, 17);
     const radiusSquared = radius * radius;
+    const bx = Math.floor(pointerX / pointerBucketSize);
+    const by = Math.floor(pointerY / pointerBucketSize);
+    const reach = Math.ceil(radius / pointerBucketSize);
+    const nearby = new Set();
 
-    for (const group of [pieces, edgePieces]) {
-      for (const piece of group) {
-        const dx = piece.x * frameWidth - pointerX;
-        const dy = piece.y * frameHeight - pointerY;
-        const distanceSquared = dx * dx + dy * dy;
-        if (distanceSquared >= radiusSquared) {
-          resetPointerPiece(piece);
-          continue;
+    // Gather only the buckets intersecting the pointer's influence radius.
+    for (let oy = -reach; oy <= reach; oy++) {
+      for (let ox = -reach; ox <= reach; ox++) {
+        const bucket = pointerBuckets.get((bx + ox) + "," + (by + oy));
+        if (bucket) {
+          for (const piece of bucket) nearby.add(piece);
         }
-
-        const distance = Math.sqrt(distanceSquared);
-        const weight = Math.pow(1 - distance / radius, 2);
-        let nx;
-        let ny;
-        if (distance > 0.5) {
-          nx = dx / distance;
-          ny = dy / distance;
-        } else {
-          const angle = piece.baseRotation * Math.PI / 180;
-          nx = Math.cos(angle);
-          ny = Math.sin(angle);
-        }
-
-        // Soft magnetic push, with a small sideways flutter.
-        const push = maxShift * weight;
-        const flutter = Math.sin(piece.baseRotation * 0.11) * push * 0.16;
-        const shiftX = nx * push - ny * flutter;
-        const shiftY = ny * push + nx * flutter;
-        const scale = 1 + weight * 0.085;
-
-        piece.element.style.translate = shiftX.toFixed(1) + "px " + shiftY.toFixed(1) + "px";
-        piece.element.style.scale = scale.toFixed(3);
-        piece.pointerActive = true;
-        interactingPieces.add(piece);
       }
+    }
+
+    // Restore elements that were affected last frame but are no longer nearby.
+    for (const piece of interactingPieces) {
+      if (!nearby.has(piece)) resetPointerPiece(piece);
+    }
+
+    for (const piece of nearby) {
+      const dx = piece.x * frameWidth - pointerX;
+      const dy = piece.y * frameHeight - pointerY;
+      const distanceSquared = dx * dx + dy * dy;
+      if (distanceSquared >= radiusSquared) {
+        resetPointerPiece(piece);
+        continue;
+      }
+
+      const distance = Math.sqrt(distanceSquared);
+      const weight = Math.pow(1 - distance / radius, 2);
+      let nx;
+      let ny;
+      if (distance > 0.5) {
+        nx = dx / distance;
+        ny = dy / distance;
+      } else {
+        const angle = piece.baseRotation * Math.PI / 180;
+        nx = Math.cos(angle);
+        ny = Math.sin(angle);
+      }
+
+      // Subtle push away from the pointer. Only a translate is added; leaving
+      // the element's existing silhouette rotation and scale untouched avoids
+      // competing transform updates with the video renderer.
+      const push = maxShift * weight;
+      const flutter = Math.sin(piece.baseRotation * 0.11) * push * 0.12;
+      const shiftX = nx * push - ny * flutter;
+      const shiftY = ny * push + nx * flutter;
+
+      if (!Number.isFinite(piece.lastPointerX) ||
+          Math.abs(shiftX - piece.lastPointerX) > 0.6 ||
+          Math.abs(shiftY - piece.lastPointerY) > 0.6) {
+        piece.element.style.translate = shiftX.toFixed(1) + "px " + shiftY.toFixed(1) + "px";
+        piece.lastPointerX = shiftX;
+        piece.lastPointerY = shiftY;
+      }
+      piece.pointerActive = true;
+      interactingPieces.add(piece);
     }
   }
 
