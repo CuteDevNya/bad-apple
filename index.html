@@ -21,7 +21,6 @@
     font-family: system-ui, sans-serif;
     user-select: none;
   }
-  /* The video-shaped field is centered and never stretched to fill the screen. */
   #visual {
     position: absolute;
     inset: 0;
@@ -30,26 +29,37 @@
     overflow: hidden;
     background: #050505;
   }
+  /* This frame follows the video's aspect ratio and is always centered. */
   #frame {
     position: relative;
     flex: none;
     overflow: hidden;
-    display: grid;
     background: #050505;
     isolation: isolate;
   }
-  .tile {
+  .piece {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 0;
     min-width: 0;
     min-height: 0;
-    display: grid;
-    place-items: center;
+    max-width: none;
+    max-height: none;
     overflow: hidden;
-    opacity: 0;
-    contain: strict;
+    line-height: 1;
+    white-space: nowrap;
+    text-overflow: clip;
+    transform-origin: center center;
     pointer-events: none;
-    will-change: opacity;
+    opacity: 0;
+    will-change: transform, opacity;
+    contain: layout style paint;
+    appearance: none;
   }
-  .tile > * {
+  .piece > * {
     min-width: 0;
     min-height: 0;
     max-width: 100%;
@@ -57,10 +67,14 @@
     margin: 0;
     overflow: hidden;
     line-height: 1;
-    box-sizing: border-box;
-    text-overflow: clip;
     white-space: nowrap;
+    box-sizing: border-box;
   }
+  .piece table { width: 100%; height: 100%; border-collapse: collapse; font: inherit; }
+  .piece td, .piece th { padding: 1px; border: 1px solid currentColor; }
+  .piece ul, .piece ol { padding-left: 8px; margin: 0; }
+  .piece fieldset { min-width: 0; padding: 1px; }
+  .piece img { width: 100%; height: 100%; object-fit: contain; }
   #video {
     position: fixed;
     width: 1px;
@@ -141,7 +155,8 @@
     "video.mp4"
   ];
 
-  // Genuine HTML elements, not CSS polygons pretending to be elements.
+  // Every item is an actual HTML tag. The number is deliberately capped to
+  // keep animation smooth instead of creating thousands of DOM nodes.
   const elementTags = [
     "button", "input", "textarea", "a", "h1", "h2", "h3", "p", "span",
     "div", "progress", "meter", "hr", "select", "label", "small", "code",
@@ -150,7 +165,7 @@
     "fieldset", "legend", "article", "aside", "nav", "header", "footer",
     "section", "figure", "figcaption", "time", "data", "var", "cite", "q",
     "address", "dl", "dt", "dd", "ruby", "bdi", "abbr", "dfn", "u", "s",
-    "i", "b", "div", "span", "form", "caption", "col", "wbr", "img"
+    "i", "b", "form", "details", "menu", "main"
   ];
   const colors = [
     "#f8f8fc", "#e6e7ee", "#c9cbd6", "#aeb2c2", "#f3b8df",
@@ -164,23 +179,27 @@
   ];
   const borderStyles = ["solid", "solid", "dashed", "dotted", "double", "none"];
   const inputTypes = ["text", "button", "checkbox", "submit", "search", "radio", "range"];
+
   let sourceIndex = 0;
   let started = false;
-  let gridColumns = 0;
-  let gridRows = 0;
-  let tiles = [];
+  let foregroundIsDark = true;
+  let pieces = [];
   let animationToken = 0;
   let lastVideoTime = -1;
   let resizeTimer = 0;
+  let frameWidth = 0;
+  let frameHeight = 0;
+  let sampleWidth = 0;
+  let sampleHeight = 0;
+  let luminance = new Uint8Array(0);
+
   const sampler = document.createElement("canvas");
   const context = sampler.getContext("2d", { willReadFrequently: true });
 
-  function choose(array) {
-    return array[Math.floor(Math.random() * array.length)];
-  }
-  function rand(min, max) {
-    return min + Math.random() * (max - min);
-  }
+  const choose = array => array[Math.floor(Math.random() * array.length)];
+  const rand = (min, max) => min + Math.random() * (max - min);
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
   function showGate(text) {
     startButton.textContent = text;
     gate.classList.add("visible");
@@ -199,47 +218,57 @@
     video.src = videoFiles[sourceIndex++];
     video.load();
   }
-  function setRandomStyle(element, tag) {
+
+  function makeElement(tag, x, y, cellWidth, cellHeight) {
+    const element = document.createElement(tag);
+    element.className = "piece";
+    element.setAttribute("aria-hidden", "true");
+
+    // Random size and scattered position are fixed for the entire video.
+    // The silhouette controls only visibility, scale and contour rotation.
+    const width = cellWidth * rand(0.42, 1.42);
+    const height = cellHeight * rand(0.40, 1.35);
+    element.style.left = x.toFixed(3) + "px";
+    element.style.top = y.toFixed(3) + "px";
+    element.style.width = width.toFixed(2) + "px";
+    element.style.height = height.toFixed(2) + "px";
+
     const bg = choose(colors);
     const fg = Math.random() < 0.2 ? choose(colors) : "#101116";
     const border = choose(colors);
-    const width = rand(54, 100);
-    const height = rand(48, 100);
-    const size = rand(7, 15);
-    const radius = Math.random() < 0.7 ? rand(0, 9).toFixed(1) + "px" : rand(20, 50).toFixed(0) + "%";
     const style = element.style;
-    style.display = "grid";
-    style.placeItems = "center";
-    style.alignContent = "center";
-    style.width = width.toFixed(1) + "%";
-    style.height = height.toFixed(1) + "%";
-    style.padding = rand(0, 3).toFixed(1) + "px";
-    style.border = rand(0, 2).toFixed(1) + "px " + choose(borderStyles) + " " + border;
-    style.borderRadius = radius;
-    style.background = Math.random() < 0.18 ? "transparent" : bg;
+    style.background = Math.random() < 0.15 ? "transparent" : bg;
     style.color = fg;
+    style.border = rand(0, 2).toFixed(1) + "px " + choose(borderStyles) + " " + border;
+    style.borderRadius = Math.random() < 0.7
+      ? rand(0, 9).toFixed(1) + "px"
+      : rand(20, 50).toFixed(0) + "%";
     style.fontFamily = choose(["Arial, sans-serif", "Georgia, serif", "monospace", "system-ui, sans-serif"]);
-    style.fontSize = size.toFixed(1) + "px";
+    style.fontSize = rand(7, 15).toFixed(1) + "px";
     style.fontWeight = choose(["400", "500", "650", "800", "900"]);
     style.fontStyle = Math.random() < 0.18 ? "italic" : "normal";
     style.textDecoration = Math.random() < 0.16 ? "underline" : "none";
     style.letterSpacing = rand(-0.5, 1.8).toFixed(1) + "px";
     style.textAlign = "center";
-    style.transform = "rotate(" + rand(-32, 32).toFixed(1) + "deg)";
-    style.boxShadow = Math.random() < 0.22 ? "0 0 " + rand(1, 7).toFixed(1) + "px " + border + "88" : "none";
     style.outline = Math.random() < 0.1 ? "1px solid " + border : "none";
-    style.opacity = "1";
-    style.appearance = "auto";
-    element.setAttribute("aria-hidden", "true");
+    style.boxShadow = Math.random() < 0.18
+      ? "0 0 " + rand(1, 5).toFixed(1) + "px " + border + "66"
+      : "none";
+    style.appearance = "none";
 
-    // Native controls remain genuine browser elements, but are never clickable.
     if (tag === "input") {
       const type = choose(inputTypes);
       element.type = type;
-      if (["button", "submit"].includes(type)) element.value = choose(textBits);
-      else if (["checkbox", "radio"].includes(type)) element.checked = Math.random() < 0.5;
-      else if (type === "range") { element.value = String(Math.floor(rand(0, 100))); element.min = "0"; element.max = "100"; }
-      else { element.value = choose(textBits); element.placeholder = choose(textBits); }
+      if (type === "button" || type === "submit") element.value = choose(textBits);
+      else if (type === "checkbox" || type === "radio") element.checked = Math.random() < 0.5;
+      else if (type === "range") {
+        element.value = String(Math.floor(rand(0, 100)));
+        element.min = "0";
+        element.max = "100";
+      } else {
+        element.value = choose(textBits);
+        element.placeholder = choose(textBits);
+      }
     } else if (tag === "textarea") {
       element.rows = 1;
       element.cols = 4;
@@ -260,43 +289,29 @@
     } else if (tag === "a") {
       element.href = "#";
       element.tabIndex = -1;
-    } else if (tag === "img") {
-      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="50" viewBox="0 0 80 50"><rect width="80" height="50" fill="' + bg + '"/><text x="40" y="32" fill="' + fg + '" font-size="21" text-anchor="middle">' + choose(["★", "✦", "?", "0", "♡", "◈"]) + '</text></svg>';
-      element.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
-      element.alt = "";
+      element.textContent = choose(textBits);
     } else if (tag === "hr") {
       style.border = "0";
       style.borderTop = rand(1, 4).toFixed(1) + "px " + choose(["solid", "dashed", "dotted"]) + " " + border;
       style.height = "1px";
-      style.width = width.toFixed(1) + "%";
-      style.background = "transparent";
-    } else if (tag === "wbr") {
-      element.textContent = "";
-      style.border = "1px solid " + border;
-      style.background = bg;
     } else if (tag === "table") {
-      const tr = document.createElement("tr");
-      const td1 = document.createElement("td");
-      const td2 = document.createElement("td");
-      td1.textContent = choose(textBits);
-      td2.textContent = choose(textBits);
-      tr.append(td1, td2);
-      element.appendChild(tr);
-      for (const cell of [td1, td2]) {
-        cell.style.border = "1px solid " + border;
-        cell.style.padding = "1px";
-      }
-    } else if (tag === "ul" || tag === "ol") {
-      const li = document.createElement("li");
-      li.textContent = choose(textBits);
-      element.appendChild(li);
-      element.style.paddingLeft = "5px";
+      const row = document.createElement("tr");
+      const cellA = document.createElement("td");
+      const cellB = document.createElement("td");
+      cellA.textContent = choose(textBits);
+      cellB.textContent = choose(textBits);
+      row.append(cellA, cellB);
+      element.appendChild(row);
+    } else if (tag === "ul" || tag === "ol" || tag === "menu") {
+      const item = document.createElement("li");
+      item.textContent = choose(textBits);
+      element.appendChild(item);
     } else if (tag === "dl") {
-      const dt = document.createElement("dt");
-      const dd = document.createElement("dd");
-      dt.textContent = choose(textBits);
-      dd.textContent = choose(textBits);
-      element.append(dt, dd);
+      const term = document.createElement("dt");
+      const definition = document.createElement("dd");
+      term.textContent = choose(textBits);
+      definition.textContent = choose(textBits);
+      element.append(term, definition);
     } else if (tag === "fieldset") {
       const legend = document.createElement("legend");
       legend.textContent = choose(textBits);
@@ -307,80 +322,169 @@
       element.appendChild(summary);
       element.open = Math.random() < 0.5;
     } else if (tag === "form") {
-      const child = document.createElement("button");
-      child.type = "button";
-      child.textContent = choose(textBits);
-      element.appendChild(child);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = choose(textBits);
+      element.appendChild(button);
     } else if (tag === "figure") {
       const caption = document.createElement("figcaption");
       caption.textContent = choose(textBits);
       element.appendChild(caption);
     } else if (tag === "ruby") {
       element.textContent = choose(["林", "猫", "夢", "夜", "月"]);
-      const rt = document.createElement("rt");
-      rt.textContent = choose(["ba", "neko", "yume", "tsuki"]);
-      element.appendChild(rt);
-    } else if (tag === "col") {
-      style.width = width.toFixed(1) + "%";
-      style.height = "100%";
-      style.background = bg;
+      const rubyText = document.createElement("rt");
+      rubyText.textContent = choose(["ba", "neko", "yume", "tsuki"]);
+      element.appendChild(rubyText);
     } else {
       element.textContent = choose(textBits);
     }
-    return element;
+
+    const baseRotation = rand(-32, 32);
+    const baseScale = rand(0.65, 1.28);
+    const rotation = baseRotation.toFixed(2);
+    const scale = baseScale.toFixed(3);
+    style.transform = "translate(-50%, -50%) rotate(" + rotation + "deg) scale(" + scale + ")";
+    return {
+      element,
+      x: x / frameWidth,
+      y: y / frameHeight,
+      width: width / frameWidth,
+      height: height / frameHeight,
+      baseRotation,
+      baseScale,
+      lastOpacity: -1,
+      lastAngle: NaN,
+      lastScale: NaN
+    };
   }
+
   function resizeFrame() {
     if (!video.videoWidth || !video.videoHeight) return;
     const aspect = video.videoWidth / video.videoHeight;
-    // Fit the full image inside the viewport while preserving the video's ratio.
-    const width = Math.max(1, Math.min(window.innerWidth, window.innerHeight * aspect));
-    const height = width / aspect;
-    frame.style.width = width + "px";
-    frame.style.height = height + "px";
+    frameWidth = Math.max(1, Math.min(window.innerWidth, window.innerHeight * aspect));
+    frameHeight = frameWidth / aspect;
+    frame.style.width = frameWidth + "px";
+    frame.style.height = frameHeight + "px";
     frame.style.aspectRatio = aspect;
-    const nextColumns = Math.max(36, Math.min(88, Math.round(width / 20)));
-    const nextRows = Math.max(16, Math.round(nextColumns / aspect));
-    if (nextColumns === gridColumns && nextRows === gridRows && tiles.length) return;
-    gridColumns = nextColumns;
-    gridRows = nextRows;
-    sampler.width = gridColumns;
-    sampler.height = gridRows;
-    frame.style.gridTemplateColumns = "repeat(" + gridColumns + ", minmax(0, 1fr))";
-    frame.style.gridTemplateRows = "repeat(" + gridRows + ", minmax(0, 1fr))";
+
+    // About 600–700 items on desktop, rather than several thousand.
+    const targetCount = clamp(Math.round((frameWidth * frameHeight) / 2100), 280, 680);
+    const columns = Math.max(1, Math.round(Math.sqrt(targetCount * aspect)));
+    const rows = Math.max(1, Math.ceil(targetCount / columns));
+    const cellWidth = frameWidth / columns;
+    const cellHeight = frameHeight / rows;
+
+    sampleWidth = clamp(Math.round(frameWidth / 8), 96, 180);
+    sampleHeight = Math.max(48, Math.round(sampleWidth / aspect));
+    sampler.width = sampleWidth;
+    sampler.height = sampleHeight;
+    luminance = new Uint8Array(sampleWidth * sampleHeight);
+
     const fragment = document.createDocumentFragment();
-    tiles = [];
-    for (let i = 0; i < gridColumns * gridRows; i++) {
-      const tile = document.createElement("div");
-      tile.className = "tile";
-      const tag = choose(elementTags);
-      const element = document.createElement(tag);
-      tile.appendChild(setRandomStyle(element, tag));
-      tiles.push(tile);
-      fragment.appendChild(tile);
+    pieces = [];
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < columns; col++) {
+        if (pieces.length >= targetCount) break;
+        // Stratified random scattering keeps the screen well covered without
+        // making a rigid grid. Size, color, tag and base angle are randomized.
+        const x = (col + rand(0.08, 0.92)) * cellWidth;
+        const y = (row + rand(0.08, 0.92)) * cellHeight;
+        const piece = makeElement(choose(elementTags), x, y, cellWidth, cellHeight);
+        pieces.push(piece);
+        fragment.appendChild(piece.element);
+      }
     }
     frame.replaceChildren(fragment);
     lastVideoTime = -1;
     renderFrame();
   }
-  function renderFrame() {
+
+  function detectForegroundPolarity(data) {
+    // On a monochrome clip the larger background region decides the polarity.
+    // This lets either black-on-white or white-on-black silhouettes work.
+    let dark = 0;
+    let bright = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const l = data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722;
+      if (l < 128) dark++;
+      else bright++;
+    }
+    foregroundIsDark = dark < bright;
+  }
+
+  function renderFrame(force = false) {
     if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
-        !video.videoWidth || !tiles.length || context === null) return;
-    if (lastVideoTime === video.currentTime) return;
+        !video.videoWidth || !pieces.length || !context) return;
+    if (!force && lastVideoTime === video.currentTime) return;
     lastVideoTime = video.currentTime;
+
     try {
-      context.drawImage(video, 0, 0, gridColumns, gridRows);
-      const pixels = context.getImageData(0, 0, gridColumns, gridRows).data;
-      // Each real HTML element is revealed according to the matching video pixel.
-      for (let i = 0, p = 0; i < tiles.length; i++, p += 4) {
-        const luminance = pixels[p] * 0.2126 + pixels[p + 1] * 0.7152 + pixels[p + 2] * 0.0722;
-        const level = Math.max(0, Math.min(1, (luminance - 35) / 210));
-        const alpha = level < 0.035 ? 0 : Math.min(0.98, Math.pow(level, 0.72) * 0.96);
-        tiles[i].style.opacity = alpha.toFixed(3);
+      context.drawImage(video, 0, 0, sampleWidth, sampleHeight);
+      const rgba = context.getImageData(0, 0, sampleWidth, sampleHeight).data;
+      for (let i = 0, p = 0; i < luminance.length; i++, p += 4) {
+        luminance[i] = Math.round(rgba[p] * 0.2126 + rgba[p + 1] * 0.7152 + rgba[p + 2] * 0.0722);
+      }
+
+      const maxX = sampleWidth - 1;
+      const maxY = sampleHeight - 1;
+      const at = (x, y) => luminance[clamp(y, 0, maxY) * sampleWidth + clamp(x, 0, maxX)];
+      for (const piece of pieces) {
+        const sx = Math.round(piece.x * maxX);
+        const sy = Math.round(piece.y * maxY);
+        const rx = Math.max(1, Math.round(piece.width * sampleWidth * 0.28));
+        const ry = Math.max(1, Math.round(piece.height * sampleHeight * 0.28));
+
+        // Five-point coverage lets larger pieces straddle a silhouette edge.
+        const points = [
+          at(sx, sy),
+          at(sx - rx, sy - ry),
+          at(sx + rx, sy - ry),
+          at(sx - rx, sy + ry),
+          at(sx + rx, sy + ry)
+        ];
+        let coverage = 0;
+        for (const l of points) {
+          const fg = foregroundIsDark ? 255 - l : l;
+          coverage += clamp((fg - 34) / 150, 0, 1);
+        }
+        coverage /= points.length;
+
+        const gx = at(sx + 1, sy) - at(sx - 1, sy);
+        const gy = at(sx, sy + 1) - at(sx, sy - 1);
+        const gradient = Math.sqrt(gx * gx + gy * gy);
+
+        // Only elements near a genuine contour are aligned to its tangent.
+        // Elements in the flat silhouette interior keep their randomized angle.
+        const edgeWeight = clamp((gradient - 24) / 100, 0, 1) * (1 - Math.abs(coverage * 2 - 1));
+        const tangentAngle = Math.atan2(gy, gx) * 180 / Math.PI + 90;
+        let angleDifference = ((tangentAngle - piece.baseRotation + 540) % 360) - 180;
+        const angle = piece.baseRotation + angleDifference * edgeWeight;
+
+        // Random base dimensions stay varied; the mask gently scales them at
+        // edges so they fit the silhouette instead of appearing as a rigid grid.
+        const edgeScale = 1 - edgeWeight * 0.24;
+        const scale = piece.baseScale * (0.78 + coverage * 0.32) * edgeScale;
+        const opacity = coverage < 0.11 ? 0 : clamp(coverage * 1.12, 0, 0.94);
+        const element = piece.element;
+
+        if (Math.abs(opacity - piece.lastOpacity) > 0.018) {
+          element.style.opacity = opacity.toFixed(3);
+          piece.lastOpacity = opacity;
+        }
+        if (!Number.isFinite(piece.lastAngle) ||
+            Math.abs(angle - piece.lastAngle) > 1.8 ||
+            Math.abs(scale - piece.lastScale) > 0.025) {
+          element.style.transform =
+            "translate(-50%, -50%) rotate(" + angle.toFixed(1) + "deg) scale(" + scale.toFixed(3) + ")";
+          piece.lastAngle = angle;
+          piece.lastScale = scale;
+        }
       }
     } catch (error) {
       console.error("Could not sample video frame:", error);
     }
   }
+
   function stopAnimation() { animationToken++; }
   function animate() {
     stopAnimation();
@@ -401,6 +505,7 @@
       requestAnimationFrame(next);
     }
   }
+
   async function beginAutomatically() {
     if (started) return;
     started = true;
@@ -411,7 +516,7 @@
       hideGate();
       animate();
     } catch (_) {
-      // Sound autoplay is commonly blocked. Start silently and offer an audio button.
+      // Audio autoplay may be blocked: start the visuals muted, then offer sound.
       video.muted = true;
       try {
         await video.play();
@@ -422,6 +527,7 @@
       }
     }
   }
+
   startButton.addEventListener("click", async () => {
     if (startButton.disabled) return;
     video.muted = false;
@@ -435,6 +541,7 @@
       console.warn("Playback still blocked:", error);
     }
   });
+
   video.addEventListener("error", () => {
     if (sourceIndex < videoFiles.length) loadNextVideo();
     else {
@@ -448,14 +555,22 @@
     resizeFrame();
     beginAutomatically();
   });
-  video.addEventListener("loadeddata", renderFrame);
+  video.addEventListener("loadeddata", () => {
+    try {
+      context.drawImage(video, 0, 0, sampleWidth || 128, sampleHeight || 72);
+      detectForegroundPolarity(context.getImageData(0, 0, sampleWidth || 128, sampleHeight || 72).data);
+    } catch (_) {
+      // Keep the default dark-foreground interpretation if sampling fails.
+    }
+    renderFrame(true);
+  });
   video.addEventListener("play", animate);
-  video.addEventListener("seeked", () => { lastVideoTime = -1; renderFrame(); });
+  video.addEventListener("seeked", () => { lastVideoTime = -1; renderFrame(true); });
   video.addEventListener("timeupdate", renderFrame);
-  video.addEventListener("ended", () => { lastVideoTime = -1; renderFrame(); });
+  video.addEventListener("ended", () => { lastVideoTime = -1; renderFrame(true); });
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(resizeFrame, 80);
+    resizeTimer = setTimeout(resizeFrame, 100);
   });
 
   loadNextVideo();
