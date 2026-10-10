@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#e7d8b8">
+<title>Bad Apple — Magnetic Field</title>
+<style>
+*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#e7d8b8}
+body{position:fixed;inset:0;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+#paper{display:block;width:100%;height:100%}
+#video{position:fixed;width:1px;height:1px;left:-30px;top:-30px;opacity:0;pointer-events:none}
+#error{display:none;position:fixed;left:14px;right:14px;bottom:14px;padding:10px 12px;color:#efe1c2;background:#43352a;border:1px solid #92744e;font:12px/1.5 Georgia,serif;text-align:center}
+</style>
+</head>
+<body>
+<canvas id="paper" aria-label="Bad Apple als bewegtes Magnetfeld aus geschwungenen Feldlinien"></canvas>
+<video id="video" playsinline preload="auto" loop src="bad_apple.mp4"></video>
+<div id="error">„bad_apple.mp4“ konnte nicht geladen werden. Bitte prüfe, ob die Datei neben dieser HTML-Datei liegt.</div>
+<script>
+(() => {
+"use strict";
+const canvas=document.getElementById("paper"),ctx=canvas.getContext("2d",{alpha:false,desynchronized:true});
+const video=document.getElementById("video"),errorBox=document.getElementById("error");
+const SW=180,SH=135,SAMPLE_MS=48,FORM_MS=1180,TAU=Math.PI*2;
+const raw=new Float32Array(SW*SH),lum=new Float32Array(SW*SH),gx=new Float32Array(SW*SH),gy=new Float32Array(SW*SH);
+const sampleCanvas=document.createElement("canvas");sampleCanvas.width=SW;sampleCanvas.height=SH;
+const sampleCtx=sampleCanvas.getContext("2d",{willReadFrequently:true});
+let state="intro",started=0,lastSample=0,dpr=1,aspect=4/3,frame={x:0,y:0,w:1,h:1},magnet={x:0,y:0};
+let seeds=[],filings=[],fibers=[],wood=[],audioContext=null,audioGain=null,audioSource=null;
+const rand=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const smooth=t=>{t=clamp(t,0,1);return t*t*(3-2*t);};
+const ease=t=>1-Math.pow(1-clamp(t,0,1),3);
+
+function layout(){
+ const W=innerWidth,H=innerHeight,maxW=W*.91,maxH=H*.70;
+ let w=maxW,h=w/aspect;if(h>maxH){h=maxH;w=h*aspect;}
+ frame={x:(W-w)/2,y:(H-h)/2,w,h};magnet={x:W*.5,y:H*.77};
+ seeds=[];const cols=22,rows=17;
+ for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)seeds.push({
+  x:(c+.18+Math.random()*.64)*SW/cols,y:(r+.18+Math.random()*.64)*SH/rows,
+  sign:Math.random()<.5?-1:1,phase:rand(0,TAU),weight:rand(.78,1.2)
+ });
+ filings=[];for(let i=0;i<170;i++)filings.push({x:Math.random(),y:Math.random(),l:rand(3,10),w:rand(.4,1.15),p:rand(0,TAU)});
+ fibers=[];for(let i=0;i<390;i++)fibers.push({x:Math.random(),y:Math.random(),w:rand(.003,.026),bend:rand(-.8,.8),a:rand(.025,.12),light:Math.random()<.45});
+ wood=[];for(let i=0;i<22;i++)wood.push({y:Math.random(),bend:rand(-10,10),a:rand(.025,.06)});
+}
+function resize(){
+ const W=Math.max(1,innerWidth),H=Math.max(1,innerHeight);dpr=Math.min(devicePixelRatio||1,1.35);
+ canvas.width=Math.round(W*dpr);canvas.height=Math.round(H*dpr);canvas.style.width=W+"px";canvas.style.height=H+"px";
+ ctx.setTransform(dpr,0,0,dpr,0,0);layout();
+}
+function drawPaper(now){
+ const W=innerWidth,H=innerHeight,g=ctx.createLinearGradient(0,0,W,H);
+ g.addColorStop(0,"#f0e4ca");g.addColorStop(.52,"#e5d4b1");g.addColorStop(1,"#d4bd92");
+ ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+ for(const f of fibers){const x=f.x*W,y=f.y*H;ctx.globalAlpha=f.a;ctx.strokeStyle=f.light?"#fff7df":"#9b7b51";ctx.lineWidth=f.light?.8:.55;
+  ctx.beginPath();ctx.moveTo(x,y);ctx.quadraticCurveTo(x+f.w*W*.5,y+f.bend,x+f.w*W,y+f.bend*.3);ctx.stroke();}
+ ctx.globalAlpha=1;
+ for(const l of wood){const y=l.y*H;ctx.globalAlpha=l.a;ctx.strokeStyle="#806140";ctx.lineWidth=.6;ctx.beginPath();ctx.moveTo(0,y);ctx.bezierCurveTo(W*.3,y+l.bend,W*.7,y-l.bend,W,y+l.bend*.25);ctx.stroke();}
+ ctx.globalAlpha=1;
+ const m=clamp(Math.min(W,H)*.025,9,18);ctx.strokeStyle="rgba(94,65,37,.72)";ctx.lineWidth=.8;ctx.strokeRect(m,m,W-2*m,H-2*m);
+ ctx.strokeStyle="rgba(143,104,63,.48)";ctx.lineWidth=.5;ctx.strokeRect(m+4,m+4,W-2*m-8,H-2*m-8);
+ ctx.fillStyle="#7d5c3c";ctx.font="italic 10px Georgia,serif";ctx.textBaseline="middle";ctx.textAlign="left";ctx.fillText("PLATE III",m+9,m+15);
+ ctx.textAlign="right";ctx.fillText("FIELD STUDY / 1908",W-m-9,m+15);ctx.textAlign="left";ctx.fillText("FIG. 3",m+9,H-m-15);ctx.textAlign="right";ctx.fillText("IRON FILINGS & MAGNETIC FLUX",W-m-9,H-m-15);
+}
+function drawMagnet(now,shrinking=false){
+ const x=magnet.x,y=magnet.y,s=clamp(Math.min(innerWidth,innerHeight)/560,.62,1.02),p=shrinking?ease((now-started)/FORM_MS):0,w=106*s,h=80*s;
+ ctx.save();ctx.translate(x,y);ctx.scale(1-p*.42,1-p*.42);ctx.rotate(Math.sin(p*Math.PI)*.09);
+ ctx.shadowColor="rgba(64,38,19,.22)";ctx.shadowBlur=8*s;ctx.shadowOffsetY=5*s;
+ ctx.beginPath();ctx.moveTo(-w*.5,h*.5);ctx.lineTo(-w*.5,-h*.25);ctx.quadraticCurveTo(-w*.5,-h*.5,-w*.27,-h*.5);
+ ctx.lineTo(-w*.08,-h*.5);ctx.lineTo(-w*.08,h*.15);ctx.lineTo(w*.08,h*.15);ctx.lineTo(w*.08,-h*.5);ctx.lineTo(w*.27,-h*.5);
+ ctx.quadraticCurveTo(w*.5,-h*.5,w*.5,-h*.25);ctx.lineTo(w*.5,h*.5);ctx.lineTo(w*.28,h*.5);ctx.lineTo(w*.28,-h*.16);ctx.lineTo(w*.22,-h*.23);ctx.lineTo(-w*.22,-h*.23);ctx.lineTo(-w*.28,-h*.16);ctx.lineTo(-w*.28,h*.5);ctx.closePath();
+ const g=ctx.createLinearGradient(-w*.5,0,w*.5,0);g.addColorStop(0,"#79352a");g.addColorStop(.28,"#b65c48");g.addColorStop(.49,"#e1b99b");g.addColorStop(.72,"#59606a");g.addColorStop(1,"#343a44");
+ ctx.fillStyle=g;ctx.fill();ctx.shadowBlur=0;ctx.strokeStyle="#51382a";ctx.lineWidth=1*s;ctx.stroke();
+ ctx.fillStyle="#f3d7bd";ctx.font="bold "+10*s+"px Georgia,serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("N",-w*.18,-h*.37);ctx.fillText("S",w*.18,-h*.37);ctx.restore();
+ if(shrinking&&p>.15){ctx.globalAlpha=(1-p)*.45;ctx.strokeStyle="#8d4833";ctx.lineWidth=.8;for(let i=0;i<4;i++){ctx.beginPath();ctx.ellipse(x,y,25+p*115+i*12,20+p*65+i*10,0,0,TAU);ctx.stroke();}ctx.globalAlpha=1;}
+}
+function drawIntro(now){
+ drawPaper(now);
+ const W=innerWidth,H=innerHeight,cx=W/2,cy=H*.335,r=Math.min(W,H)*.095;
+ ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle="#463423";ctx.font="italic "+clamp(W*.047,19,29)+"px Georgia,serif";ctx.fillText("The invisible force",cx,Math.max(43,H*.13));
+ ctx.fillStyle="#826746";ctx.font="10px Georgia,serif";ctx.fillText("AN EXPERIMENT IN MAGNETISM",cx,Math.max(61,H*.13+23));
+ ctx.strokeStyle="rgba(107,76,45,.75)";ctx.lineWidth=.7;ctx.beginPath();ctx.arc(cx,cy,r,0,TAU);ctx.stroke();ctx.beginPath();ctx.arc(cx,cy,r*.82,0,TAU);ctx.stroke();
+ for(let i=0;i<48;i++){const a=i*TAU/48,len=i%4===0?7:3;ctx.beginPath();ctx.moveTo(cx+Math.cos(a)*(r-len),cy+Math.sin(a)*(r-len));ctx.lineTo(cx+Math.cos(a)*r,cy+Math.sin(a)*r);ctx.stroke();}
+ ctx.beginPath();ctx.moveTo(cx,cy-r*.68);ctx.lineTo(cx-r*.18,cy+r*.4);ctx.lineTo(cx,cy+r*.23);ctx.lineTo(cx+r*.18,cy+r*.4);ctx.closePath();ctx.fillStyle="#8f3f30";ctx.fill();
+ ctx.fillStyle="#4a3827";ctx.font="9px Georgia,serif";ctx.fillText("N",cx,cy-r-12);ctx.fillText("S",cx,cy+r+12);
+ for(const f of filings){const x=f.x*W,y=f.y*H,curve=Math.sin(f.p+now*.00012+x*.012)*11;ctx.strokeStyle=f.x<.5?"rgba(92,67,41,.47)":"rgba(65,57,48,.4)";ctx.lineWidth=f.w;ctx.beginPath();ctx.moveTo(x,y);ctx.quadraticCurveTo(x+curve,y-f.l*.7,x+curve*1.6,y+f.l);ctx.stroke();}
+ drawMagnet(now,false);ctx.fillStyle="#6c5033";ctx.font="italic 11px Georgia,serif";ctx.fillText("Tap the magnet to reveal the field",W/2,H*.91);
+}
+function sampleFrame(now){
+ if(video.readyState<2||!video.videoWidth||!video.videoHeight||now-lastSample<SAMPLE_MS)return;
+ lastSample=now;
+ try{
+  sampleCtx.drawImage(video,0,0,SW,SH);const d=sampleCtx.getImageData(0,0,SW,SH).data;
+  for(let i=0,p=0;i<raw.length;i++,p+=4)raw[i]=d[p]*.2126+d[p+1]*.7152+d[p+2]*.0722;
+  for(let y=0;y<SH;y++)for(let x=0;x<SW;x++){const i=y*SW+x;if(x===0||y===0||x===SW-1||y===SH-1){lum[i]=raw[i];continue;}
+   lum[i]=raw[i]*.4+(raw[i-1]+raw[i+1]+raw[i-SW]+raw[i+SW])*.12+(raw[i-SW-1]+raw[i-SW+1]+raw[i+SW-1]+raw[i+SW+1])*.03;}
+  for(let y=1;y<SH-1;y++)for(let x=1;x<SW-1;x++){const i=y*SW+x;gx[i]=(lum[i+1]-lum[i-1])/255;gy[i]=(lum[i+SW]-lum[i-SW])/255;}
+ }catch(e){console.warn("Cannot read current video frame",e);}
+}
+function drawContours(x,y,w,h,opacity){
+ for(const threshold of [74,126,178]){
+  ctx.beginPath();
+  for(let yy=1;yy<SH-1;yy++)for(let xx=1;xx<SW-1;xx++){
+   const p=yy*SW+xx,vals=[lum[p],lum[p+1],lum[p+SW+1],lum[p+SW]],coords=[[xx,yy],[xx+1,yy],[xx+1,yy+1],[xx,yy+1]],hits=[];
+   for(const [a,b] of [[0,1],[1,2],[2,3],[3,0]])if((vals[a]<threshold&&vals[b]>=threshold)||(vals[b]<threshold&&vals[a]>=threshold)){
+    const t=(threshold-vals[a])/(vals[b]-vals[a]);hits.push([coords[a][0]+(coords[b][0]-coords[a][0])*t,coords[a][1]+(coords[b][1]-coords[a][1])*t]);}
+   if(hits.length===2){ctx.moveTo(x+hits[0][0]/SW*w,y+hits[0][1]/SH*h);ctx.lineTo(x+hits[1][0]/SW*w,y+hits[1][1]/SH*h);}
+   else if(hits.length===4){ctx.moveTo(x+hits[0][0]/SW*w,y+hits[0][1]/SH*h);ctx.lineTo(x+hits[1][0]/SW*w,y+hits[1][1]/SH*h);ctx.moveTo(x+hits[2][0]/SW*w,y+hits[2][1]/SH*h);ctx.lineTo(x+hits[3][0]/SW*w,y+hits[3][1]/SH*h);}
+  }
+  ctx.strokeStyle=threshold===126?"rgba(129,61,44,.7)":"rgba(51,38,27,.42)";ctx.lineWidth=threshold===126?.7:.42;ctx.globalAlpha=opacity;ctx.stroke();
+ }
+ ctx.globalAlpha=1;
+}
+function drawField(now){
+ const {x,y,w,h}=frame,fade=state==="forming"?smooth((now-started)/(FORM_MS*.72)):1;
+ ctx.save();ctx.beginPath();ctx.rect(x,y,w,h);ctx.clip();
+ for(const seed of seeds){
+  let px=seed.x,py=seed.y;const pts=[],phase=seed.phase+now*.00023;
+  for(let k=0;k<68;k++){
+   if(px<1||py<1||px>=SW-1||py>=SH-1)break;
+   pts.push([x+px/SW*w,y+py/SH*h,px,py]);const i=Math.round(py)*SW+Math.round(px);
+   let vx=gy[i]*3.7+seed.sign*.24+Math.sin(py*.067+phase)*.23,vy=-gx[i]*3.7+Math.cos(px*.052-phase)*.29+seed.sign*.12;
+   const length=Math.hypot(vx,vy)||1;px+=vx/length*1.2;py+=vy/length*1.2;
+  }
+  for(let k=0;k<pts.length-1;k+=3){
+   const a=pts[k],b=pts[Math.min(k+1,pts.length-1)],c=pts[Math.min(k+2,pts.length-1)],d=pts[Math.min(k+3,pts.length-1)];
+   const ix=clamp(Math.round((b[2]+c[2])*.5),0,SW-1),iy=clamp(Math.round((b[3]+c[3])*.5),0,SH-1),ink=1-lum[iy*SW+ix]/255;
+   ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.lineTo(c[0],c[1]);ctx.lineTo(d[0],d[1]);
+   ctx.strokeStyle=seed.sign<0?"#874332":"#30261b";ctx.globalAlpha=fade*(.025+ink*.72)*seed.weight;ctx.lineWidth=.22+ink*1.02;ctx.stroke();
+  }
+ }
+ ctx.globalAlpha=1;if(fade>.15)drawContours(x,y,w,h,fade);ctx.restore();
+ ctx.strokeStyle="rgba(95,65,39,.62)";ctx.lineWidth=.7;const s=8;
+ for(const [xx,yy,dx,dy] of [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]]){ctx.beginPath();ctx.moveTo(xx+dx*s,yy);ctx.lineTo(xx,yy);ctx.lineTo(xx,yy+dy*s);ctx.stroke();}
+ ctx.textAlign="left";ctx.textBaseline="middle";ctx.fillStyle="#725339";ctx.font="italic 9px Georgia,serif";ctx.fillText("LIVE FIELD / 03",x,y-10);ctx.textAlign="right";ctx.fillText("IRON FILINGS",x+w,y-10);
+}
+function drawForming(now){
+ const p=ease((now-started)/FORM_MS);drawPaper(now);
+ if(p<.78){ctx.globalAlpha=1-p/.78;const {x:mx,y:my}=magnet;ctx.strokeStyle="#936e49";ctx.lineWidth=.7;
+  for(let k=0;k<10;k++){const spread=18+k*10;ctx.beginPath();ctx.moveTo(mx-spread*.35,my-40);ctx.bezierCurveTo(mx-spread*1.4,my-105-spread*.3,mx+spread*1.4,my-105-spread*.3,mx+spread*.35,my-40);ctx.stroke();}ctx.globalAlpha=1;}
+ drawField(now);drawMagnet(now,true);
+ if(p>=1)state="playing";
+}
+function begin(){
+ if(state!=="intro"){if(video.paused)video.play().catch(()=>{});return;}state="forming";started=performance.now();lastSample=0;
+ try{const AC=window.AudioContext||window.webkitAudioContext;if(AC){audioContext=new AC();audioGain=audioContext.createGain();audioGain.gain.value=0;audioSource=audioContext.createMediaElementSource(video);audioSource.connect(audioGain);audioGain.connect(audioContext.destination);audioContext.resume().catch(()=>{});}}catch(_){audioContext=null;audioGain=null;}
+ video.muted=false;video.volume=1;const p=video.play();if(p&&p.catch)p.catch(()=>{});if(audioContext&&audioGain)audioGain.gain.setTargetAtTime(1,audioContext.currentTime+.25,.17);
+}
+function tick(now){
+ if(state==="intro")drawIntro(now);
+ else{sampleFrame(now);if(state==="forming")drawForming(now);else{drawPaper(now);drawField(now);}}
+ requestAnimationFrame(tick);
+}
+video.addEventListener("loadedmetadata",()=>{aspect=video.videoWidth/video.videoHeight||4/3;resize();});
+video.addEventListener("error",()=>{errorBox.style.display="block";});
+document.addEventListener("pointerdown",begin,{passive:true});
+window.addEventListener("resize",resize);
+resize();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
