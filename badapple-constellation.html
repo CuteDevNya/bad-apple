@@ -189,7 +189,7 @@
   }
 
   function buildApple() {
-    if (!video.videoWidth || startRequested) return;
+    if (!video.videoWidth) return;
     resizeFrame();
     const targetCount = clamp(Math.round(frameWidth*frameHeight/1400),560,1000);
     const columns = Math.max(1,Math.round(Math.sqrt(targetCount*aspect)));
@@ -245,7 +245,10 @@
       startVideo();
       return;
     }
-    if (startRequested) return;
+    if (startRequested) {
+      if (dispersed && !playbackStarted) startVideo();
+      return;
+    }
     startRequested = true;
     beginExperience();
   }
