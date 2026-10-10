@@ -2,13 +2,12 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#050505">
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <title>Bad Apple — Zufallsseite</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <title>Bad Apple — Random</title>
   <style>
-    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#050505; }
-    #page { display:block; width:100%; height:100%; border:0; background:#050505; }
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#000; }
+    #page { display:block; width:100%; height:100%; border:0; background:#000; }
   </style>
 </head>
 <body>
@@ -16,17 +15,20 @@
 <script>
 (() => {
   "use strict";
+
+  // Explizite Liste der HTML-Varianten im Repository.
+  // So ist die Auswahl unabhängig von API-Limits oder GitHub-Dateilisten.
   const pages = [
     "badapple-elements.html",
-    "badapple-fragment-bloom.html"
+    "badapple-fragment-bloom.html",
+    "badapple-constellation.html"
   ];
   const frame = document.getElementById("page");
-  const storageKey = "badAppleLastPageV2";
+  const storageKey = "badApplePageIndexV3";
 
-  function getPrevious() {
+  function readPrevious() {
     try {
-      return sessionStorage.getItem(storageKey) ||
-             localStorage.getItem(storageKey) || "";
+      return sessionStorage.getItem(storageKey) || localStorage.getItem(storageKey) || "";
     } catch (_) {
       try { return localStorage.getItem(storageKey) || ""; } catch (_) { return ""; }
     }
@@ -37,16 +39,25 @@
     try { localStorage.setItem(storageKey, path); } catch (_) {}
   }
 
-  // Two live variants: avoid repeating the same page on consecutive reloads.
-  const previous = getPrevious();
-  let candidates = pages.filter(path => path !== previous);
-  if (!candidates.length) candidates = pages;
-  const selected = candidates[Math.floor(Math.random() * candidates.length)];
+  function randomIndex(length) {
+    if (window.crypto && window.crypto.getRandomValues) {
+      const value = new Uint32Array(1);
+      window.crypto.getRandomValues(value);
+      return value[0] % length;
+    }
+    return Math.floor(Math.random() * length);
+  }
+
+  // Choose randomly from every available page, and avoid repeating the previous
+  // choice so refreshes visibly cycle to another design.
+  const previous = readPrevious();
+  let choices = pages.filter(path => path !== previous);
+  if (choices.length === 0) choices = pages;
+  const selected = choices[randomIndex(choices.length)];
   remember(selected);
 
-  // Keep the address on index.html and bypass a stale cached iframe document.
-  const url = selected.split("/").map(encodeURIComponent).join("/");
-  frame.src = url + "?refresh=" + Date.now();
+  // Keep the address at index.html and bypass a cached copy of the chosen page.
+  frame.src = selected + "?v=" + Date.now().toString(36) + "-" + randomIndex(0x7fffffff).toString(36);
 })();
 </script>
 </body>
