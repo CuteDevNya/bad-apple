@@ -11,6 +11,7 @@
   body { position:fixed;inset:0;font-family:Tahoma,"MS Sans Serif",sans-serif;user-select:none;-webkit-user-select:none;touch-action:manipulation; }
   #popup-layer { position:absolute;inset:0;overflow:hidden;background:#000; }
   #video { position:fixed;width:1px;height:1px;left:-30px;top:-30px;opacity:0;pointer-events:none; }
+  #video-canvas { position:absolute;inset:0;display:none;width:100%;height:100%;pointer-events:none; }
   .xp-window {
     position:absolute;display:flex;flex-direction:column;overflow:hidden;
     background:#ece9d8;border:1px solid #08379b;border-radius:3px 3px 1px 1px;
@@ -111,6 +112,7 @@
       <div class="xp-footer"><span class="xp-ok">OK</span></div>
     </div>
   </div>
+  <canvas id="video-canvas" aria-hidden="true"></canvas>
 </div>
 <video id="video" playsinline preload="auto" loop>
   <source src="bad_apple.mp4" type="video/mp4">
@@ -122,6 +124,10 @@
   const layer = document.getElementById("popup-layer");
   const intro = document.getElementById("intro-wrap");
   const video = document.getElementById("video");
+  const playbackCanvas = document.getElementById("video-canvas");
+  const playbackCtx = playbackCanvas.getContext("2d", {alpha:true, desynchronized:true});
+  const popupTextures = {full:[], tiny:[], micro:[], microTiny:[]};
+  let canvasScale = 1;
   const MAX_WINDOWS = 240;
   const CELL_FACTOR = 4;
   const THRESHOLD = 127;
@@ -151,6 +157,154 @@
     "Die Systemressourcen reichen nicht aus, um den Vorgang abzuschließen.",
     "Ein Fehler ist aufgetreten. Die Daten konnten nicht aus dem Speicher gelesen werden."
   ];
+
+  function roundedPath(ctx,x,y,w,h,r) {
+    const radius=Math.min(r,w/2,h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+radius,y);
+    ctx.lineTo(x+w-radius,y);
+    ctx.quadraticCurveTo(x+w,y,x+w,y+radius);
+    ctx.lineTo(x+w,y+h-radius);
+    ctx.quadraticCurveTo(x+w,y+h,x+w-radius,y+h);
+    ctx.lineTo(x+radius,y+h);
+    ctx.quadraticCurveTo(x,y+h,x,y+h-radius);
+    ctx.lineTo(x,y+radius);
+    ctx.quadraticCurveTo(x,y,x+radius,y);
+    ctx.closePath();
+  }
+
+  function drawTextureControl(ctx,x,y,w,h,label,isClose) {
+    const g=ctx.createLinearGradient(0,y,0,y+h);
+    if(isClose) {
+      g.addColorStop(0,"#ffb99c");g.addColorStop(0.4,"#f15a3b");g.addColorStop(1,"#c7190d");
+    } else {
+      g.addColorStop(0,"#76b6ff");g.addColorStop(0.52,"#126be0");g.addColorStop(1,"#0052ca");
+    }
+    roundedPath(ctx,x,y,w,h,2);
+    ctx.fillStyle=g;ctx.fill();
+    ctx.strokeStyle="#ffffffbb";ctx.lineWidth=1;ctx.stroke();
+    ctx.fillStyle="#fff";ctx.font="bold 12px Tahoma,sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(label,x+w/2,y+h/2+0.5);
+  }
+
+  function wrapCanvasText(ctx,text,x,y,maxWidth,lineHeight,maxLines) {
+    const words=text.split(/\s+/);
+    let line="",lineCount=0;
+    for(const word of words) {
+      const candidate=line?line+" "+word:word;
+      if(line && ctx.measureText(candidate).width>maxWidth) {
+        ctx.fillText(line,x,y+lineCount*lineHeight);
+        line=word;lineCount++;
+        if(lineCount>=maxLines) return;
+      } else line=candidate;
+    }
+    if(line && lineCount<maxLines) ctx.fillText(line,x,y+lineCount*lineHeight);
+  }
+
+  function createPopupTexture(index,mode) {
+    const micro=mode==="micro"||mode==="microTiny";
+    const tiny=mode==="tiny"||mode==="microTiny";
+    const W=320,H=micro?100:140;
+    const titleH=micro?23:32,footerH=micro?0:34;
+    const canvas=document.createElement("canvas");
+    canvas.width=W;canvas.height=H;
+    const ctx=canvas.getContext("2d");
+    ctx.clearRect(0,0,W,H);
+
+    ctx.save();
+    ctx.shadowColor="rgba(0,0,0,.62)";ctx.shadowBlur=5;ctx.shadowOffsetX=2;ctx.shadowOffsetY=3;
+    roundedPath(ctx,2,2,W-4,H-4,4);ctx.fillStyle="#ece9d8";ctx.fill();
+    ctx.restore();
+    roundedPath(ctx,2,2,W-4,H-4,4);ctx.strokeStyle="#08379b";ctx.lineWidth=2;ctx.stroke();
+    ctx.fillStyle="#ece9d8";ctx.fillRect(4,titleH+1,W-8,H-titleH-5);
+
+    const barGradient=ctx.createLinearGradient(0,2,0,titleH+2);
+    barGradient.addColorStop(0,"#5aa5f9");barGradient.addColorStop(0.09,"#1672e8");
+    barGradient.addColorStop(0.48,"#0061e9");barGradient.addColorStop(0.88,"#0055df");barGradient.addColorStop(1,"#3b8df0");
+    ctx.fillStyle=barGradient;ctx.fillRect(3,3,W-6,titleH);
+    ctx.fillStyle="#003ba5";ctx.fillRect(3,titleH+2,W-6,1);
+
+    if(!tiny) {
+      const iconGradient=ctx.createLinearGradient(7,6,24,23);
+      iconGradient.addColorStop(0,"#fff4a4");iconGradient.addColorStop(0.42,"#e5a32c");
+      iconGradient.addColorStop(0.43,"#d34820");iconGradient.addColorStop(1,"#a90000");
+      roundedPath(ctx,7,Math.max(4,(titleH-17)/2),17,17,2);ctx.fillStyle=iconGradient;ctx.fill();
+      ctx.strokeStyle="#ffffffbb";ctx.stroke();
+      ctx.fillStyle="#fff";ctx.font="bold 13px Tahoma,sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";
+      ctx.fillText(["!","×","?","i"][index%4],15.5,titleH/2+1);
+    }
+
+    const ctrlY=Math.max(4,(titleH-21)/2),ctrlH=Math.min(21,titleH-6);
+    const closeX=W-25;
+    drawTextureControl(ctx,closeX,ctrlY,19,ctrlH,"×",true);
+    if(!tiny) {
+      drawTextureControl(ctx,W-48,ctrlY,19,ctrlH,"▢",false);
+      drawTextureControl(ctx,W-71,ctrlY,19,ctrlH,"_",false);
+    }
+    ctx.save();
+    const titleX=tiny?8:29;
+    const titleEnd=tiny?W-29:W-75;
+    ctx.beginPath();ctx.rect(titleX,3,Math.max(1,titleEnd-titleX),titleH);ctx.clip();
+    ctx.fillStyle="#fff";ctx.font="bold 14px Tahoma,sans-serif";ctx.textAlign="left";ctx.textBaseline="middle";
+    ctx.shadowColor="#164b9a";ctx.shadowOffsetX=1;ctx.shadowOffsetY=1;ctx.shadowBlur=0;
+    ctx.fillText(titles[index%titles.length],titleX,titleH/2+1,Math.max(1,titleEnd-titleX));
+    ctx.restore();
+
+    if(!micro) {
+      const bodyTop=titleH+3,bodyBottom=H-footerH;
+      const midY=bodyTop+(bodyBottom-bodyTop)/2;
+      const errorGradient=ctx.createRadialGradient(28,midY-8,2,30,midY,19);
+      errorGradient.addColorStop(0,"#ffaaa0");errorGradient.addColorStop(0.38,"#f33a30");errorGradient.addColorStop(1,"#b40000");
+      ctx.beginPath();ctx.arc(30,midY,14,0,Math.PI*2);ctx.fillStyle=errorGradient;ctx.fill();
+      ctx.strokeStyle="#fff9";ctx.lineWidth=2;ctx.stroke();
+      ctx.strokeStyle="#fff";ctx.lineWidth=3;ctx.lineCap="round";
+      ctx.beginPath();ctx.moveTo(24,midY-6);ctx.lineTo(36,midY+6);ctx.moveTo(36,midY-6);ctx.lineTo(24,midY+6);ctx.stroke();
+
+      ctx.fillStyle="#111";ctx.font="12px Tahoma,sans-serif";ctx.textAlign="left";ctx.textBaseline="top";
+      wrapCanvasText(ctx,messages[(index*3)%messages.length],55,bodyTop+11,W-70,15,3);
+
+      const footerY=H-footerH;
+      ctx.fillStyle="#ece9d8";ctx.fillRect(4,footerY,W-8,footerH-4);
+      const buttonGradient=ctx.createLinearGradient(0,H-28,0,H-6);
+      buttonGradient.addColorStop(0,"#fff");buttonGradient.addColorStop(0.55,"#f1f0e8");buttonGradient.addColorStop(1,"#e0ded3");
+      roundedPath(ctx,W-88,H-28,72,22,3);ctx.fillStyle=buttonGradient;ctx.fill();
+      ctx.strokeStyle="#003c74";ctx.lineWidth=1;ctx.stroke();
+      ctx.strokeStyle="#ffffffaa";ctx.beginPath();ctx.moveTo(W-86,H-26);ctx.lineTo(W-18,H-26);ctx.stroke();
+      ctx.fillStyle="#111";ctx.font="11px Tahoma,sans-serif";ctx.textAlign="center";ctx.textBaseline="middle";
+      ctx.fillText("OK",W-52,H-17);
+    }
+    return canvas;
+  }
+
+  function buildPopupTextures() {
+    const modes=["full","tiny","micro","microTiny"];
+    for(const mode of modes) {
+      popupTextures[mode]=[];
+      for(let i=0;i<12;i++) popupTextures[mode].push(createPopupTexture(i,mode));
+    }
+  }
+
+  function resizePlaybackCanvas() {
+    const W=Math.max(1,window.innerWidth),H=Math.max(1,window.innerHeight);
+    canvasScale=Math.min(window.devicePixelRatio||1,2);
+    playbackCanvas.width=Math.round(W*canvasScale);
+    playbackCanvas.height=Math.round(H*canvasScale);
+    playbackCanvas.style.width=W+"px";
+    playbackCanvas.style.height=H+"px";
+    playbackCtx.setTransform(canvasScale,0,0,canvasScale,0,0);
+  }
+
+  function drawPlaybackTiles(tiles) {
+    const W=window.innerWidth,H=window.innerHeight;
+    playbackCtx.clearRect(0,0,W,H);
+    for(let i=0;i<tiles.length;i++) {
+      const r=tiles[i];
+      const mode=r.h<26?(r.w<52?"microTiny":"micro"):(r.w<52?"tiny":"full");
+      const variants=popupTextures[mode];
+      const texture=variants[i%variants.length];
+      playbackCtx.drawImage(texture,r.x,r.y,Math.max(1,r.w),Math.max(1,r.h));
+    }
+  }
 
   let state = "intro";
   let sourceW = 0, sourceH = 0;
@@ -576,12 +730,14 @@
 
   function startMovie() {
     if(state!=="morph") return;
-    // The windows have collapsed to center lines; remove them before the movie draws its first real frame.
+    // Swap hundreds of live DOM windows for a single canvas at playback time.
     for(const win of windows) win.remove();
     windows=[];
     state="playing";
     layer.classList.remove("morph");
     layer.classList.add("playing");
+    resizePlaybackCanvas();
+    playbackCanvas.style.display="block";
     try {
       video.pause();
       video.currentTime=0;
@@ -637,18 +793,7 @@
       c.drawImage(video,0,0,sourceW,sourceH);
       const data=c.getImageData(0,0,sourceW,sourceH).data;
       const tiles=makeTiles(data,MAX_WINDOWS);
-      if(!tiles.length) {
-        for(const win of windows) win.remove();
-        windows=[];
-        return;
-      }
-      // Match the actual light regions in each frame: no surplus windows are left stacked on top.
-      if(windows.length>tiles.length) {
-        for(const extra of windows.slice(tiles.length)) extra.remove();
-        windows=windows.slice(0,tiles.length);
-      }
-      ensureWindowCount(tiles.length);
-      for(let i=0;i<tiles.length;i++) setWindowRect(windows[i],tiles[i],true);
+      drawPlaybackTiles(tiles);
     } catch(error) {
       console.error("Could not update popup layout.",error);
     } finally {
@@ -665,7 +810,9 @@
 
   function tick(now) {
     if(state==="playing") updateFromCurrentFrame(now);
-    requestAnimationFrame(tick);
+    buildPopupTextures();
+  resizePlaybackCanvas();
+  requestAnimationFrame(tick);
   }
 
   document.addEventListener("pointerdown",onPointerDown,{passive:true});
@@ -679,6 +826,7 @@
   video.addEventListener("error",()=>console.error("bad_apple.mp4 could not be loaded from the repository root."));
   window.addEventListener("resize",()=>{
     frameRect=getFrameRect();
+    if(state==="playing") resizePlaybackCanvas();
     if(state==="intro") {
       const win=document.getElementById("intro-window");
       if(win) win.style.width="min(392px,calc(100vw - 30px))";
