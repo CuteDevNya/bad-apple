@@ -4,17 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="theme-color" content="#000000">
-<title>Bad Apple — SIGNAL//VOID</title>
+<title>Bad Apple — Afterimage</title>
 <style>
   * { box-sizing:border-box; }
   html,body { width:100%;height:100%;margin:0;overflow:hidden;background:#000; }
-  body { position:fixed;inset:0;user-select:none;-webkit-user-select:none;touch-action:manipulation; }
+  body { position:fixed;inset:0;touch-action:manipulation;user-select:none;-webkit-user-select:none; }
   #screen { position:absolute;inset:0;width:100%;height:100%;display:block;background:#000; }
   #video { position:fixed;width:1px;height:1px;left:-20px;top:-20px;opacity:0;pointer-events:none; }
 </style>
 </head>
 <body>
-<canvas id="screen" aria-label="Bad Apple Signal Void animation"></canvas>
+<canvas id="screen" aria-label="Bad Apple Afterimage"></canvas>
 <video id="video" playsinline preload="auto" loop>
   <source src="bad_apple.mp4" type="video/mp4">
 </video>
@@ -22,309 +22,330 @@
 (() => {
   "use strict";
   const canvas = document.getElementById("screen");
-  const ctx = canvas.getContext("2d", { alpha:false });
+  const ctx = canvas.getContext("2d", {alpha:false});
   const video = document.getElementById("video");
-  const raster = document.createElement("canvas");
-  const rasterCtx = raster.getContext("2d", { willReadFrequently:true });
-  const bayer = [
-    [0,8,2,10],
-    [12,4,14,6],
-    [3,11,1,9],
-    [15,7,13,5]
-  ];
-
-  let W = 1, H = 1, dpr = 1;
-  let stars = [];
-  let state = "intro";
-  let startTime = 0;
-  let clickPoint = { x:0, y:0 };
-  let sourceW = 0, sourceH = 0;
-  let sourceImage = null, outputImage = null;
-  let nativePixelsReady = false;
-  let startPromise = null;
-  let retryPlayback = false;
-
-  const rand = (a,b) => a + Math.random() * (b-a);
-  const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
-  const smooth = t => t*t*(3-2*t);
+  const sampler = document.createElement("canvas");
+  const sampleCtx = sampler.getContext("2d", {willReadFrequently:true});
+  let W=1,H=1,dpr=1,sourceW=0,sourceH=0;
+  let state="idle",startedAt=0,clickX=0,clickY=0,particles=[];
+  let sourceReady=false,targetsReady=false,playRequested=false,playBlocked=false;
+  let sourcePixels=null,sourceAspect=4/3,lastRandomGlitch=0,glitchUntil=0;
+  let resizeAgain=false;
+  const rnd=(a,b)=>a+Math.random()*(b-a);
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  const easeOut=t=>1-Math.pow(1-t,3);
+  const easeInOut=t=>t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
 
   function resize() {
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth;
-    H = window.innerHeight;
-    canvas.width = Math.max(1,Math.floor(W*dpr));
-    canvas.height = Math.max(1,Math.floor(H*dpr));
+    dpr=Math.min(window.devicePixelRatio||1,2);
+    W=window.innerWidth; H=window.innerHeight;
+    canvas.width=Math.max(1,Math.round(W*dpr));
+    canvas.height=Math.max(1,Math.round(H*dpr));
     ctx.setTransform(dpr,0,0,dpr,0,0);
-    if (state === "intro") createStars();
+    if(state==="idle") makeIdleParticles();
   }
 
-  function createStars() {
-    const count = Math.round(clamp(W*H/1150,360,1050));
-    stars = [];
-    for (let i=0;i<count;i++) {
-      const x = rand(0,W), y = rand(0,H);
-      const dx = x-W*0.5, dy = y-H*0.5;
-      stars.push({
-        x,y,
-        radius:rand(0.35,1.65),
-        alpha:rand(0.16,0.82),
-        phase:rand(0,Math.PI*2),
-        twinkle:rand(0.4,2.1),
-        angle:Math.atan2(dy,dx),
-        orbit:Math.hypot(dx,dy),
-        direction:Math.random()<0.5?-1:1,
-        lane:rand(12,135),
-        drift:rand(0.1,0.7),
-        hue:Math.random()<0.19,
-        streak:Math.random()<0.12
+  function frameRect() {
+    const aw=W, ah=H, ar=sourceAspect||4/3;
+    const width=Math.min(aw,ah*ar), height=width/ar;
+    return {x:(W-width)/2,y:(H-height)/2,w:width,h:height};
+  }
+
+  function makeIdleParticles() {
+    if(state!=="idle") return;
+    const count=Math.round(clamp(W*H/1250,420,960));
+    particles=[];
+    for(let i=0;i<count;i++) {
+      const angle=rnd(0,Math.PI*2), ring=rnd(0.05,0.48);
+      particles.push({
+        x:W*(0.5+Math.cos(angle)*ring),
+        y:H*(0.5+Math.sin(angle)*ring),
+        fromX:0,fromY:0,toX:0,toY:0,
+        size:rnd(0.35,1.7),phase:rnd(0,Math.PI*2),speed:rnd(0.3,1.7),
+        orbit:rnd(3,20),direction:Math.random()<0.5?-1:1,
+        alpha:rnd(0.16,0.9),hue:Math.random()<0.2
       });
     }
   }
 
-  function fitRect() {
-    const aspect = sourceW && sourceH ? sourceW/sourceH : 4/3;
-    const width = Math.min(W,H*aspect);
-    const height = width/aspect;
-    return { x:(W-width)/2, y:(H-height)/2, width, height };
-  }
-
-  function drawIntro(now) {
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0,0,W,H);
-    const p = state === "intro" ? 0 : clamp((now-startTime)/1180,0,1);
-    const eased = smooth(p);
-    const cx = W/2, cy = H/2;
-    const elapsed = now*0.001;
-
-    // A quiet orbital anomaly: this start is a moving field, not DOM fragments.
-    ctx.save();
-    ctx.translate(cx,cy);
-    for (let ring=0;ring<5;ring++) {
-      const base = Math.min(W,H)*(0.105+ring*0.052);
-      const r = base*(1-eased*0.84);
-      ctx.beginPath();
-      ctx.strokeStyle = "rgba(215,235,255," + ((0.10-ring*0.012)*(1-eased*0.35)) + ")";
-      ctx.lineWidth = ring===0 ? 1.2 : 0.6;
-      ctx.setLineDash([2+ring*1.7,7+ring*4.3]);
-      ctx.lineDashOffset = -elapsed*(ring%2 ? -6 : 5)*(ring+1);
-      ctx.ellipse(0,0,r,r*(0.45+ring*0.12),elapsed*(ring%2 ? -0.12 : 0.09),0,Math.PI*2);
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-    const core = Math.max(1.5,Math.min(W,H)*0.044*(1-eased*0.85));
-    const glow = ctx.createRadialGradient(0,0,0,0,0,Math.max(3,core*4.8));
-    glow.addColorStop(0,"rgba(235,248,255,"+(0.30*(1-eased*0.3))+")");
-    glow.addColorStop(0.24,"rgba(90,145,185,0.12)");
-    glow.addColorStop(1,"rgba(10,20,35,0)");
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(0,0,Math.max(3,core*4.8),0,Math.PI*2);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(235,247,255,"+(0.62*(1-eased))+")";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(0,0,core,elapsed*0.8,elapsed*0.8+Math.PI*1.63);
-    ctx.stroke();
-    ctx.restore();
-
-    // The click sends a shockwave from wherever the user touched.
-    if (state === "warping") {
-      const age = clamp((now-startTime)/1180,0,1);
-      for (let i=0;i<3;i++) {
-        const radius = age*Math.hypot(W,H)*0.7-i*26;
-        if (radius<0) continue;
-        ctx.beginPath();
-        ctx.arc(clickPoint.x,clickPoint.y,radius,0,Math.PI*2);
-        ctx.strokeStyle = "rgba(210,239,255,"+((1-age)*0.24)+")";
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-    }
-
-    for (const star of stars) {
-      let x = star.x+Math.sin(elapsed*star.drift+star.phase)*5;
-      let y = star.y+Math.cos(elapsed*star.drift*0.8+star.phase)*5;
-      let alpha = star.alpha*(0.65+0.35*Math.sin(elapsed*star.twinkle+star.phase));
-      let radius = star.radius;
-      if (state === "warping") {
-        const q = smooth(clamp((now-startTime)/1040,0,1));
-        const dx = star.x-cx, dy = star.y-cy;
-        const initialR = Math.hypot(dx,dy);
-        const angle = star.angle+q*(star.direction*1.7+Math.sin(star.phase)*0.35);
-        const targetR = star.lane*(1-q)+Math.min(W,H)*0.018*q;
-        const r = initialR*(1-q)+targetR*q;
-        x = cx+Math.cos(angle)*r;
-        y = cy+Math.sin(angle)*r;
-        alpha = star.alpha*(1-q*0.3);
-        radius = star.radius*(1+q*1.3);
-        const pull = q*q*0.28;
-        x += (clickPoint.x-x)*pull;
-        y += (clickPoint.y-y)*pull;
-      }
-      if (x<-3 || y<-3 || x>W+3 || y>H+3) continue;
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = star.hue ? "#b4e9ff" : "#e9f4ff";
-      if (star.streak && state === "warping") {
-        ctx.strokeStyle = ctx.fillStyle;
-        ctx.lineWidth = radius*0.7;
-        ctx.beginPath();
-        ctx.moveTo(x,y);
-        ctx.lineTo(x-Math.cos(star.angle)*radius*7,y-Math.sin(star.angle)*radius*7);
-        ctx.stroke();
-      } else {
-        ctx.beginPath();
-        ctx.arc(x,y,radius,0,Math.PI*2);
-        ctx.fill();
-      }
-    }
-    ctx.globalAlpha = 1;
-
-    if (state === "intro") {
-      const pulse = 0.28+0.19*(0.5+0.5*Math.sin(elapsed*1.25));
-      ctx.globalAlpha = pulse;
-      ctx.fillStyle = "#cfe2f2";
-      ctx.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText("TOUCH TO BREAK THE SIGNAL",W/2,H*0.79);
-      ctx.globalAlpha = 1;
-      const notch = 12+4*Math.sin(elapsed*1.5);
-      ctx.fillStyle = "rgba(220,241,255,"+pulse+")";
-      ctx.fillRect(cx-notch/2,H*0.79+15,notch,1);
-    }
-  }
-
-  function setupNativeRaster() {
-    if (!video.videoWidth || !video.videoHeight) return;
-    sourceW = video.videoWidth;
-    sourceH = video.videoHeight;
-    // Full-resolution work buffers use exactly the source video's native dimensions.
-    raster.width = sourceW;
-    raster.height = sourceH;
-    sourceImage = rasterCtx.createImageData(sourceW,sourceH);
-    outputImage = rasterCtx.createImageData(sourceW,sourceH);
-    nativePixelsReady = true;
-  }
-
-  function processNativeFrame(now) {
-    if (!nativePixelsReady || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
-    rasterCtx.drawImage(video,0,0,sourceW,sourceH);
-    sourceImage = rasterCtx.getImageData(0,0,sourceW,sourceH);
-    const src = sourceImage.data;
-    const out = outputImage.data;
-    const time = now*0.001;
-    for (let y=0;y<sourceH;y++) {
-      const band = Math.sin(y*0.031+time*2.7)*Math.sin(time*0.7);
-      const tear = Math.sin(y*0.008-time*1.4)>0.993 ? Math.sin(time*15+y)*3 : 0;
-      const shift = Math.round(band*1.45+tear);
-      for (let x=0;x<sourceW;x++) {
-        const sx = clamp(x+shift,0,sourceW-1);
-        const si = (y*sourceW+sx)*4;
-        const di = (y*sourceW+x)*4;
-        const lum = src[si]*0.2126+src[si+1]*0.7152+src[si+2]*0.0722;
-        // Ordered dither on every native source pixel, never a reduced thumbnail.
-        const limit = 112+(bayer[y&3][x&3]-7.5)*5.4;
-        let value = lum>limit ? 255 : 0;
-        if (y%4===0 && value>0) value = 225;
-        out[di] = value;
-        out[di+1] = value;
-        out[di+2] = value;
-        out[di+3] = 255;
-      }
-    }
-    rasterCtx.putImageData(outputImage,0,0);
-  }
-
-  function drawVideo(now) {
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0,0,W,H);
-    processNativeFrame(now);
-    if (!nativePixelsReady) return;
-    const rect = fitRect();
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(raster,rect.x,rect.y,rect.width,rect.height);
-    ctx.imageSmoothingEnabled = true;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(rect.x,rect.y,rect.width,rect.height);
-    ctx.clip();
-    ctx.globalAlpha = 0.13;
-    ctx.fillStyle = "#000";
-    for (let y=rect.y;y<rect.y+rect.height;y+=4) ctx.fillRect(rect.x,y,rect.width,1);
-    ctx.globalAlpha = 1;
-    const vignette = ctx.createRadialGradient(W/2,H/2,Math.min(rect.width,rect.height)*0.20,W/2,H/2,Math.max(W,H)*0.72);
-    vignette.addColorStop(0,"rgba(0,0,0,0)");
-    vignette.addColorStop(1,"rgba(0,0,0,0.30)");
-    ctx.fillStyle = vignette;
-    ctx.fillRect(rect.x,rect.y,rect.width,rect.height);
-    ctx.restore();
-  }
-
-  function beginVideoPlayback() {
-    // The first real tap starts a muted stream immediately to obtain browser permission.
-    video.muted = true;
-    video.volume = 1;
+  function prepareNativeFrame() {
+    if(!video.videoWidth||!video.videoHeight) return false;
+    sourceW=video.videoWidth; sourceH=video.videoHeight; sourceAspect=sourceW/sourceH;
+    sampler.width=sourceW; sampler.height=sourceH;
     try {
-      startPromise = video.play();
-      if (startPromise && typeof startPromise.then === "function") {
-        startPromise.then(() => { retryPlayback = false; }).catch(() => {
-          retryPlayback = true;
-          startPromise = null;
+      sampleCtx.drawImage(video,0,0,sourceW,sourceH);
+      sourcePixels=sampleCtx.getImageData(0,0,sourceW,sourceH).data;
+      sourceReady=true;
+      makeTargets();
+      return true;
+    } catch(e) {
+      sourceReady=false;
+      return false;
+    }
+  }
+
+  function makeTargets() {
+    if(!sourcePixels||!sourceW||!sourceH) return;
+    const rect=frameRect();
+    const count=Math.round(clamp(rect.w*rect.h/115,1200,5200));
+    const cols=Math.max(32,Math.round(Math.sqrt(count*sourceAspect)));
+    const rows=Math.max(20,Math.ceil(count/cols));
+    let dark=0,bright=0;
+    // Find the dominant background from the original, full-resolution first frame.
+    for(let y=0;y<sourceH;y+=2) {
+      for(let x=0;x<sourceW;x+=2) {
+        const i=(y*sourceW+x)*4;
+        const l=sourcePixels[i]*0.2126+sourcePixels[i+1]*0.7152+sourcePixels[i+2]*0.0722;
+        if(l<128) dark++; else bright++;
+      }
+    }
+    const darkIsForeground=dark<bright;
+    const targets=[];
+    let foregroundSamples=0;
+    for(let row=0;row<rows;row++) {
+      for(let col=0;col<cols;col++) {
+        const px=Math.min(sourceW-1,Math.floor((col+0.5)/cols*sourceW));
+        const py=Math.min(sourceH-1,Math.floor((row+0.5)/rows*sourceH));
+        const i=(py*sourceW+px)*4;
+        const l=sourcePixels[i]*0.2126+sourcePixels[i+1]*0.7152+sourcePixels[i+2]*0.0722;
+        const isForeground=darkIsForeground ? l<128 : l>=128;
+        if(!isForeground) continue;
+        foregroundSamples++;
+        targets.push({
+          x:rect.x+(col+0.5)/cols*rect.w,
+          y:rect.y+(row+0.5)/rows*rect.h,
+          lum:l/255,
+          row,col
         });
       }
-    } catch (_) {
-      retryPlayback = true;
-      startPromise = null;
     }
+    // If frame zero is almost completely flat, use the strongest local contrast cells.
+    // The native source itself remains untouched; this fallback only affects the intro.
+    if(targets.length<48) {
+      targets.length=0;
+      const candidates=[];
+      for(let row=0;row<rows;row++) {
+        for(let col=0;col<cols;col++) {
+          const px=Math.min(sourceW-1,Math.floor((col+0.5)/cols*sourceW));
+          const py=Math.min(sourceH-1,Math.floor((row+0.5)/rows*sourceH));
+          const i=(py*sourceW+px)*4;
+          const l=sourcePixels[i]*0.2126+sourcePixels[i+1]*0.7152+sourcePixels[i+2]*0.0722;
+          candidates.push({l,x:rect.x+(col+0.5)/cols*rect.w,y:rect.y+(row+0.5)/rows*rect.h,row,col});
+        }
+      }
+      const average=candidates.reduce((sum,p)=>sum+p.l,0)/Math.max(1,candidates.length);
+      candidates.sort((a,b)=>Math.abs(b.l-average)-Math.abs(a.l-average));
+      for(const p of candidates.slice(0,Math.min(240,candidates.length))) targets.push({x:p.x,y:p.y,lum:p.l/255,row:p.row,col:p.col});
+    }
+    // Each bright mark starts elsewhere, then eases into the selected first-frame pixels.
+    const n=targets.length;
+    particles=[];
+    for(let i=0;i<n;i++) {
+      const t=targets[i], angle=rnd(0,Math.PI*2);
+      const side=Math.random()<0.5?-1:1;
+      particles.push({
+        x:rnd(-W*0.08,W*1.08), y:rnd(-H*0.08,H*1.08),
+        fromX:rnd(-W*0.08,W*1.08),fromY:rnd(-H*0.08,H*1.08),
+        toX:t.x,toY:t.y,
+        size:rnd(0.85,2.35),
+        delay:rnd(0,0.20),
+        curve:rnd(-46,46)*side,
+        angle,side,
+        alpha:rnd(0.55,1),
+        hue:Math.random()<0.16,
+        lum:t.lum,
+        row:t.row,col:t.col
+      });
+    }
+    targetsReady=particles.length>0;
+  }
+
+  function drawIdle(now) {
+    ctx.fillStyle="#000"; ctx.fillRect(0,0,W,H);
+    const t=now*0.001,cx=W/2,cy=H/2,scale=Math.min(W,H);
+    const pulse=0.5+0.5*Math.sin(t*1.6);
+    const core=scale*(0.018+0.005*pulse);
+    // A bright, breathing seed and slow orbit make the page feel alive without any text.
+    const glow=ctx.createRadialGradient(cx,cy,0,cx,cy,core*9);
+    glow.addColorStop(0,"rgba(240,249,255,"+(0.52+0.12*pulse)+")");
+    glow.addColorStop(0.18,"rgba(136,200,255,0.16)");
+    glow.addColorStop(1,"rgba(20,48,86,0)");
+    ctx.fillStyle=glow; ctx.beginPath();ctx.arc(cx,cy,core*9,0,Math.PI*2);ctx.fill();
+    for(let ring=0;ring<3;ring++) {
+      const r=scale*(0.052+ring*0.042);
+      ctx.beginPath();
+      ctx.ellipse(cx,cy,r,r*(0.62+ring*0.07),t*(ring%2?-.15:.11),0,Math.PI*2);
+      ctx.strokeStyle="rgba(190,223,255,"+((0.16-ring*0.035)*(0.6+0.4*pulse))+")";
+      ctx.lineWidth=0.7;ctx.setLineDash([1.5+ring,8+ring*3]);ctx.lineDashOffset=-t*(6+ring*5);ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    for(const p of particles) {
+      const orbitAngle=p.phase+t*p.speed*p.direction;
+      const rr=scale*(0.045+0.11*(0.5+0.5*Math.sin(p.phase*1.7+t*0.4)));
+      const x=cx+Math.cos(orbitAngle)*rr+Math.sin(t*0.3+p.phase)*p.orbit;
+      const y=cy+Math.sin(orbitAngle)*rr*0.62+Math.cos(t*0.35+p.phase)*p.orbit;
+      ctx.globalAlpha=p.alpha*(0.55+0.45*Math.sin(t*p.speed+p.phase));
+      ctx.fillStyle=p.hue?"#c1eaff":"#eef7ff";
+      ctx.beginPath();ctx.arc(x,y,p.size,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    // A tiny bright glint travels around the centre, implying the scene is interactive.
+    const a=t*0.9;
+    const gx=cx+Math.cos(a)*scale*0.095,gy=cy+Math.sin(a)*scale*0.059;
+    ctx.fillStyle="rgba(245,252,255,"+(0.45+0.4*pulse)+")";
+    ctx.beginPath();ctx.arc(gx,gy,1.4+1.1*pulse,0,Math.PI*2);ctx.fill();
   }
 
   function start(event) {
-    if (state === "intro") {
-      const rect = canvas.getBoundingClientRect();
-      clickPoint = { x:event ? event.clientX-rect.left : W/2, y:event ? event.clientY-rect.top : H/2 };
-      state = "warping";
-      startTime = performance.now();
-      beginVideoPlayback();
-    } else if (retryPlayback) {
-      video.muted = false;
-      startPromise = video.play();
-      retryPlayback = false;
+    if(state!=="idle") {
+      if(playBlocked) retryPlayback();
+      return;
     }
+    clickX=event.clientX; clickY=event.clientY;
+    state="forming";
+    startedAt=performance.now();
+    // Start a muted video directly inside the trusted tap/click to unlock playback.
+    video.muted=true;
+    video.volume=1;
+    try {
+      const promise=video.play();
+      if(promise&&typeof promise.then==="function") promise.then(()=>{playBlocked=false;}).catch(()=>{playBlocked=true;});
+    } catch(_) { playBlocked=true; }
+    if(!targetsReady) {
+      if(prepareNativeFrame()) beginFormation();
+    } else beginFormation();
   }
-  canvas.addEventListener("pointerdown",start,{passive:true});
+
+  function beginFormation() {
+    if(state!=="forming"||!targetsReady||formationStarted) return;
+    formationStarted=true;
+    startedAt=performance.now();
+  }
+  let formationStarted=false;
+
+  function retryPlayback() {
+    video.muted=false;
+    video.play().then(()=>{playBlocked=false;}).catch(()=>{playBlocked=true;});
+  }
+
+  function drawFormation(now) {
+    ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
+    const progress=clamp((now-startedAt)/1450,0,1);
+    const wave=clamp((now-startedAt)/850,0,1);
+    // A shock ring expands from the actual touch point while the particles travel in curved paths.
+    if(progress<0.88) {
+      const radius=wave*Math.hypot(W,H)*0.56;
+      ctx.beginPath();ctx.arc(clickX,clickY,radius,0,Math.PI*2);
+      ctx.strokeStyle="rgba(212,238,255,"+((1-wave)*0.36)+")";ctx.lineWidth=1;ctx.stroke();
+      ctx.beginPath();ctx.arc(clickX,clickY,Math.max(1,radius-8),0,Math.PI*2);
+      ctx.strokeStyle="rgba(124,192,255,"+((1-wave)*0.15)+")";ctx.lineWidth=2;ctx.stroke();
+    }
+    for(const p of particles) {
+      const q=clamp((progress-p.delay)/(1-p.delay),0,1), eased=easeOut(q);
+      const dx=p.toX-p.fromX,dy=p.toY-p.fromY;
+      const arc=Math.sin(q*Math.PI)*p.curve;
+      const x=p.fromX+dx*eased+Math.cos(p.angle)*arc;
+      const y=p.fromY+dy*eased+Math.sin(p.angle)*arc;
+      const size=p.size*(0.7+0.42*eased);
+      const alpha=p.alpha*(0.15+0.85*eased);
+      if(q<0.92&&Math.random()<0.13) {
+        ctx.strokeStyle="rgba(193,225,255,"+(alpha*0.19)+")";
+        ctx.lineWidth=0.6;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x-dx*0.045,y-dy*0.045);ctx.stroke();
+      }
+      ctx.globalAlpha=alpha;
+      ctx.fillStyle=p.hue&&q<0.85?"#b3e9ff":"#fff";
+      if(p.row%7===0&&p.col%5===0) {
+        ctx.save();ctx.translate(x,y);ctx.rotate((1-q)*p.side*1.5);
+        ctx.fillRect(-size*1.8,-size*0.45,size*3.6,size*0.9);ctx.restore();
+      } else {
+        ctx.fillRect(x-size/2,y-size/2,size,size);
+      }
+    }
+    ctx.globalAlpha=1;
+    if(progress>=1) revealVideo();
+  }
 
   function revealVideo() {
-    if (state !== "warping") return;
-    state = "video";
+    if(state!=="forming") return;
+    state="video";
+    // Rewind to the actual first frame, then make sound audible.
     try {
-      video.currentTime = 0;
-      video.muted = false;
-      if (video.paused && retryPlayback) {
-        startPromise = video.play();
-        retryPlayback = false;
-      }
-    } catch (_) {}
+      video.currentTime=0;
+      video.muted=false;
+    } catch(_) {}
+    if(video.paused) retryPlayback();
   }
 
-  function frame(now) {
-    if (state === "intro" || state === "warping") {
-      drawIntro(now);
-      if (state === "warping" && now-startTime >= 1180) revealVideo();
+  function drawVideo(now) {
+    ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
+    if(video.readyState<HTMLMediaElement.HAVE_CURRENT_DATA||!video.videoWidth) {
+      if(targetsReady) drawFormation(now);
+      return;
     }
-    if (state === "video") drawVideo(now);
-    if (state === "video" && video.paused && !retryPlayback) retryPlayback = true;
-    requestAnimationFrame(frame);
+    const rect=frameRect();
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(video,rect.x,rect.y,rect.w,rect.h);
+    // Subtle moving signal scanlines; the source movie keeps its native proportions and detail.
+    ctx.save();
+    ctx.beginPath();ctx.rect(rect.x,rect.y,rect.w,rect.h);ctx.clip();
+    ctx.globalAlpha=0.11;ctx.fillStyle="#000";
+    const offset=Math.floor(now*0.018)%4;
+    for(let y=rect.y+offset;y<rect.y+rect.h;y+=4) ctx.fillRect(rect.x,y,rect.w,1);
+    ctx.restore();
+    ctx.imageSmoothingEnabled=true;
   }
 
-  video.addEventListener("loadedmetadata",setupNativeRaster);
-  video.addEventListener("loadeddata",() => { if (!nativePixelsReady) setupNativeRaster(); });
-  video.addEventListener("playing",() => { if (state === "video") video.muted = false; });
-  video.addEventListener("error",() => console.error("Could not load bad_apple.mp4 from the repository root."));
-  window.addEventListener("resize",resize);
+  function render(now) {
+    if(state==="idle") drawIdle(now);
+    else if(state==="forming") {
+      if(!formationStarted) {
+        if(targetsReady) beginFormation();
+        else drawIdle(now);
+      }
+      if(formationStarted) drawFormation(now);
+    } else if(state==="video") drawVideo(now);
+    requestAnimationFrame(render);
+  }
 
+  canvas.addEventListener("pointerdown",start,{passive:true});
+  video.addEventListener("loadedmetadata",()=>{
+    sourceW=video.videoWidth;sourceH=video.videoHeight;sourceAspect=sourceW/sourceH||4/3;
+    if(video.readyState>=HTMLMediaElement.HAVE_CURRENT_DATA) {
+      if(state==="idle") prepareNativeFrame();
+      else if(state==="forming"&&!formationStarted) {
+        video.pause();
+        try { video.currentTime=0; } catch(_) {}
+        if(prepareNativeFrame()) beginFormation();
+      }
+    }
+  });
+  video.addEventListener("loadeddata",()=>{
+    if(!sourceReady) {
+      // If interaction happened before preload finished, freeze the stream at frame zero for sampling.
+      if(state==="forming") {
+        video.pause();
+        try { video.currentTime=0; } catch(_) {}
+      }
+      if(prepareNativeFrame()) {
+        if(state==="forming") beginFormation();
+      }
+    }
+  });
+  video.addEventListener("seeked",()=>{
+    if(state==="forming"&&!formationStarted&&video.readyState>=HTMLMediaElement.HAVE_CURRENT_DATA) {
+      if(prepareNativeFrame()) beginFormation();
+    }
+  });
+  video.addEventListener("error",()=>console.error("Could not load bad_apple.mp4."));
+
+  window.addEventListener("resize",()=>{
+    resizeAgain=true;
+    resize();
+    if(state==="idle") makeIdleParticles();
+  });
   resize();
-  createStars();
-  requestAnimationFrame(frame);
+  makeIdleParticles();
+  requestAnimationFrame(render);
 })();
 </script>
 </body>
