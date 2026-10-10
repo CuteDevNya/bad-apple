@@ -53,6 +53,8 @@
     white-space: nowrap;
     text-overflow: clip;
     transform-origin: center center;
+    translate: 0px 0px;
+    transition: translate 900ms cubic-bezier(.18,.75,.22,1);
     pointer-events: none;
     opacity: 0;
     will-change: transform, opacity;
@@ -84,30 +86,6 @@
     opacity: 0;
     pointer-events: none;
   }
-  #audioGate {
-    position: fixed;
-    inset: 0;
-    z-index: 5;
-    display: none;
-    place-items: center;
-    pointer-events: none;
-  }
-  #audioGate.visible { display: grid; }
-  #startButton {
-    pointer-events: auto;
-    appearance: none;
-    border: 1px solid #ffffff6b;
-    border-radius: 999px;
-    padding: 13px 19px;
-    background: #101014d9;
-    color: #fff;
-    font: 650 14px/1.2 system-ui, sans-serif;
-    letter-spacing: .01em;
-    box-shadow: 0 6px 32px #0008;
-    backdrop-filter: blur(10px);
-    cursor: pointer;
-  }
-  #startButton:hover { background: #292932ee; }
   #missing {
     position: fixed;
     z-index: 6;
@@ -131,9 +109,6 @@
     <div id="frame" aria-hidden="true"></div>
   </main>
   <video id="video" playsinline preload="auto" loop></video>
-  <div id="audioGate" role="dialog" aria-label="Wiedergabe starten">
-    <button id="startButton" type="button">▶ Start Bad Apple mit Ton</button>
-  </div>
   <div id="missing">Videodatei nicht gefunden. Lege <b>bad_apple.mp4</b> neben die index.html ins Repository.</div>
 
 <script>
@@ -142,8 +117,6 @@
   const visual = document.getElementById("visual");
   const frame = document.getElementById("frame");
   const video = document.getElementById("video");
-  const gate = document.getElementById("audioGate");
-  const startButton = document.getElementById("startButton");
   const missing = document.getElementById("missing");
 
   const videoFiles = [
@@ -181,10 +154,16 @@
   const inputTypes = ["text", "button", "checkbox", "submit", "search", "radio", "range"];
 
   let sourceIndex = 0;
-  let started = false;
   let foregroundIsDark = true;
   let pieces = [];
   let edgePieces = [];
+  let appleReady = false;
+  let startRequested = false;
+  let morphStarted = false;
+  let morphFinished = false;
+  let videoReady = false;
+  let playbackStarted = false;
+  let awaitingPlayback = false;
   let animationToken = 0;
   let lastVideoTime = -1;
   let resizeTimer = 0;
@@ -196,24 +175,20 @@
 
   const sampler = document.createElement("canvas");
   const context = sampler.getContext("2d", { willReadFrequently: true });
+  const appleProbe = document.createElement("canvas");
+  appleProbe.width = appleProbe.height = 1000;
+  const appleProbeContext = appleProbe.getContext("2d");
+  const applePath = new Path2D("M 500 235 C 444 178 416 83 324 124 C 229 76 116 129 76 267 C 17 470 110 721 261 855 C 352 935 433 899 500 864 C 567 899 648 935 739 855 C 890 721 983 470 924 267 C 884 129 771 76 676 124 C 584 83 556 178 500 235 Z");
+  applePath.addPath(new Path2D("M 490 238 C 480 180 493 129 535 83 L 557 96 C 522 151 516 197 526 240 Z"));
+  applePath.addPath(new Path2D("M 526 147 C 556 61 660 45 708 75 C 677 151 596 183 526 147 Z"));
 
   const choose = array => array[Math.floor(Math.random() * array.length)];
   const rand = (min, max) => min + Math.random() * (max - min);
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-  function showGate(text) {
-    startButton.textContent = text;
-    gate.classList.add("visible");
-  }
-  function hideGate() {
-    gate.classList.remove("visible");
-  }
   function loadNextVideo() {
     if (sourceIndex >= videoFiles.length) {
       missing.style.display = "block";
-      showGate("Videodatei fehlt");
-      startButton.disabled = true;
-      startButton.style.cursor = "default";
       return;
     }
     video.src = videoFiles[sourceIndex++];
@@ -420,8 +395,139 @@
 
     frame.replaceChildren(fragment);
     lastVideoTime = -1;
-    renderFrame();
+    prepareAppleIntro();
   }
+
+  function createApplePositions(count) {
+    const positions = [];
+    let attempts = 0;
+    const attemptLimit = count * 30;
+    while (positions.length < count && attempts < attemptLimit) {
+      attempts++;
+      const nx = rand(0.025, 0.975);
+      const ny = rand(0.025, 0.975);
+      if (appleProbeContext.isPointInPath(applePath, nx * 1000, ny * 1000)) {
+        positions.push({
+          nx,
+          ny,
+          x: frameWidth * (0.5 + (nx - 0.5) * 0.76),
+          y: frameHeight * (0.06 + ny * 0.87)
+        });
+      }
+    }
+    while (positions.length < count) {
+      positions.push({
+        nx: rand(0.18, 0.82),
+        ny: rand(0.16, 0.84),
+        x: frameWidth * rand(0.28, 0.72),
+        y: frameHeight * rand(0.2, 0.84)
+      });
+    }
+    return positions;
+  }
+
+  function prepareAppleIntro() {
+    const allPieces = pieces.concat(edgePieces);
+    if (!allPieces.length || !frameWidth || !frameHeight) return;
+    const positions = createApplePositions(allPieces.length);
+
+    for (let i = 0; i < allPieces.length; i++) {
+      const piece = allPieces[i];
+      const position = positions[i];
+      const targetX = piece.x * frameWidth;
+      const targetY = piece.y * frameHeight;
+      const offsetX = position.x - targetX;
+      const offsetY = position.y - targetY;
+      const element = piece.element;
+
+      piece.targetLeft = targetX;
+      piece.targetTop = targetY;
+      piece.appleX = position.x;
+      piece.appleY = position.y;
+      piece.pointerActive = false;
+
+      // Start each actual, randomly styled HTML tag as part of one big apple.
+      element.style.transition = "none";
+      element.style.translate = offsetX.toFixed(1) + "px " + offsetY.toFixed(1) + "px";
+      element.style.opacity = rand(0.74, 0.98).toFixed(2);
+
+      // Small green leaf and brown stem accents, still built from HTML elements.
+      if (position.ny < 0.19 && position.nx > 0.52 && position.nx < 0.73) {
+        element.style.background = Math.random() < 0.5 ? "#a9e6a1" : "#d1f0ae";
+        element.style.color = "#183b24";
+        element.style.borderColor = "#92c98b";
+      } else if (position.ny < 0.20 && position.nx > 0.475 && position.nx < 0.535) {
+        element.style.background = "#8a5a3b";
+        element.style.color = "#fff0d7";
+        element.style.borderColor = "#bb8a62";
+      }
+    }
+
+    // Commit the initial apple positions before enabling the transition.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      for (const piece of allPieces) {
+        piece.element.style.transition = "translate 900ms cubic-bezier(.18,.75,.22,1)";
+      }
+    }));
+    appleReady = true;
+  }
+
+  function beginMorph() {
+    if (!startRequested || !videoReady || !appleReady || morphStarted || !pieces.length) return;
+    morphStarted = true;
+    const allPieces = pieces.concat(edgePieces);
+
+    // The whole page is clickable, not just a visible button.
+    requestAnimationFrame(() => {
+      for (const piece of allPieces) {
+        piece.element.style.translate = "0px 0px";
+      }
+    });
+
+    window.setTimeout(() => {
+      morphFinished = true;
+      lastVideoTime = -1;
+      renderFrame(true);
+      attemptPlayback();
+    }, 930);
+  }
+
+  function attemptPlayback() {
+    if (!startRequested || !morphFinished || playbackStarted || !videoReady) return;
+    video.muted = false;
+    video.volume = 1;
+    let result;
+    try {
+      result = video.play();
+    } catch (_) {
+      awaitingPlayback = true;
+      return;
+    }
+    if (result && typeof result.then === "function") {
+      result.then(() => {
+        playbackStarted = true;
+        awaitingPlayback = false;
+        animate();
+      }).catch(error => {
+        // No button: any later tap directly retries playback in a fresh gesture.
+        awaitingPlayback = true;
+        console.info("Playback needs another page interaction:", error);
+      });
+    }
+  }
+
+  function handlePageInteraction() {
+    if (playbackStarted) return;
+    if (morphFinished && awaitingPlayback) {
+      attemptPlayback();
+      return;
+    }
+    if (startRequested) return;
+    startRequested = true;
+    if (videoReady) beginMorph();
+  }
+
+  document.addEventListener("pointerdown", handlePageInteraction, { passive: true });
 
   function detectForegroundPolarity(data) {
     // On a monochrome clip the larger background region decides the polarity.
@@ -437,7 +543,8 @@
   }
 
   function renderFrame(force = false) {
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+    if (!morphFinished ||
+        video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
         !video.videoWidth || !pieces.length || !context) return;
     if (!force && lastVideoTime === video.currentTime) return;
     lastVideoTime = video.currentTime;
@@ -653,31 +760,33 @@
 
   video.addEventListener("error", () => {
     if (sourceIndex < videoFiles.length) loadNextVideo();
-    else {
-      missing.style.display = "block";
-      showGate("Videodatei fehlt");
-      startButton.disabled = true;
-    }
+    else missing.style.display = "block";
   });
   video.addEventListener("loadedmetadata", () => {
     missing.style.display = "none";
     resizeFrame();
-    beginAutomatically();
   });
   video.addEventListener("loadeddata", () => {
     try {
-      context.drawImage(video, 0, 0, sampleWidth || 128, sampleHeight || 72);
-      detectForegroundPolarity(context.getImageData(0, 0, sampleWidth || 128, sampleHeight || 72).data);
+      context.drawImage(video, 0, 0, sampleWidth, sampleHeight);
+      detectForegroundPolarity(context.getImageData(0, 0, sampleWidth, sampleHeight).data);
     } catch (_) {
-      // Keep the default dark-foreground interpretation if sampling fails.
+      // Keep the default polarity if sampling fails.
     }
-    renderFrame(true);
+    videoReady = true;
+    if (startRequested) beginMorph();
+  });
+  video.addEventListener("playing", () => {
+    playbackStarted = true;
+    awaitingPlayback = false;
+    animate();
   });
   video.addEventListener("play", animate);
   video.addEventListener("seeked", () => { lastVideoTime = -1; renderFrame(true); });
   video.addEventListener("timeupdate", renderFrame);
   video.addEventListener("ended", () => { lastVideoTime = -1; renderFrame(true); });
   window.addEventListener("resize", () => {
+    if (startRequested) return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(resizeFrame, 100);
   });
