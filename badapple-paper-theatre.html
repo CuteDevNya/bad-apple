@@ -83,7 +83,7 @@
     book={x:bx,y:by,w:bw,h:bh};
     const max=fit(bw*.84,bh*.60,videoAspect);
     const sx=bx+(bw-max.w)/2;
-    const sy=by+bh*.43-max.h/2;
+    const sy=by+bh*.50-max.h/2;
     screen={x:sx,y:sy,w:max.w,h:max.h};
     const pad=clamp(Math.min(bw,bh)*.027,7,19);
     screenFrame={x:sx-pad,y:sy-pad,w:max.w+pad*2,h:max.h+pad*2};
@@ -264,14 +264,14 @@
     ctx.fillStyle=g;
     ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+w,y);
     ctx.lineTo(x+w,y+h*.55);
-    for(let i=8;i>=0;i--) {
-      const xx=x+w*i/8;
-      ctx.quadraticCurveTo(xx-w/16,y+h*1.12,xx-w/8,y+h*.55);
+    for(let i=7;i>=0;i--) {
+      const nextX=x+w*i/8;
+      ctx.quadraticCurveTo(nextX+w/16,y+h*1.12,nextX,y+h*.55);
     }
     ctx.lineTo(x,y);ctx.closePath();ctx.fill();
     ctx.strokeStyle="#d0a26b";ctx.lineWidth=.7;ctx.globalAlpha=.72;
     ctx.beginPath();ctx.moveTo(x,y+h*.55);
-    for(let i=8;i>=0;i--){const xx=x+w*i/8;ctx.quadraticCurveTo(xx-w/16,y+h*1.12,xx-w/8,y+h*.55);}
+    for(let i=7;i>=0;i--){const nextX=x+w*i/8;ctx.quadraticCurveTo(nextX+w/16,y+h*1.12,nextX,y+h*.55);}
     ctx.stroke();ctx.globalAlpha=1;
   }
 
@@ -313,7 +313,6 @@
     for(const p of [[f.x+5,f.y+5],[f.x+f.w-5,f.y+5],[f.x+5,f.y+f.h-5],[f.x+f.w-5,f.y+f.h-5]]) {
       ctx.beginPath();ctx.arc(p[0],p[1],1.7,0,Math.PI*2);ctx.fillStyle="#e3bf7c";ctx.fill();
     }
-    ctx.restore();
   }
 
   function drawAppleEmblem(cx,cy,size,alpha=1) {
