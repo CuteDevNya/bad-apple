@@ -17,14 +17,15 @@
   "use strict";
   const pages = [
     "badapple-elements.html",
-    "badapple-xp-popups.html"
+    "badapple-xp-popups.html",
+    "badapple-prism-shards.html"
   ];
-  const key = "badAppleXPPopupShuffleV1";
+  const key = "badAppleExperienceShuffleV2";
   const frame = document.getElementById("page");
   let previous = "";
   try { previous = localStorage.getItem(key) || ""; } catch (_) {}
 
-  // Select randomly from the original and the new XP-popup experience.
+  // Select randomly from the original, XP-popup and prismatic-shard experiences.
   // Prefer a different page than last time so both designs remain easy to discover.
   let choices = pages.filter(path => path !== previous);
   if (!choices.length) choices = pages;
