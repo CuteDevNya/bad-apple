@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>Bad Apple — Origami Flock</title>
+<style>
+*{box-sizing:border-box}
+html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#000}
+body{position:fixed;inset:0;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+#sky{display:block;width:100%;height:100%}
+#video{position:fixed;width:1px;height:1px;left:-20px;top:-20px;opacity:0;pointer-events:none}
+#error{display:none;position:fixed;left:14px;right:14px;bottom:14px;padding:10px 12px;background:#211f1d;color:#f1ece4;border:1px solid #817a70;font:12px/1.5 Georgia,serif;text-align:center}
+</style>
+</head>
+<body>
+<canvas id="sky" aria-label="Ein Schwarm weißer Origami-Kraniche formt Bad Apple auf schwarzem Hintergrund"></canvas>
+<video id="video" playsinline preload="auto" loop src="bad_apple.mp4"></video>
+<div id="error">„bad_apple.mp4“ konnte nicht geladen werden. Prüfe, ob die Videodatei neben dieser HTML-Datei liegt.</div>
+<script>
+(() => {
+"use strict";
+const canvas=document.getElementById("sky"),ctx=canvas.getContext("2d",{alpha:false,desynchronized:true});
+const video=document.getElementById("video"),errorBox=document.getElementById("error");
+const SRC_W=180,SRC_H=135,FRAME_MS=55,FORM_MS=1380,TAU=Math.PI*2;
+const sourceCanvas=document.createElement("canvas");sourceCanvas.width=SRC_W;sourceCanvas.height=SRC_H;
+const sourceCtx=sourceCanvas.getContext("2d",{willReadFrequently:true});
+const raw=new Float32Array(SRC_W*SRC_H),luma=new Float32Array(SRC_W*SRC_H),gx=new Float32Array(SRC_W*SRC_H),gy=new Float32Array(SRC_W*SRC_H);
+let state="intro",started=0,lastSample=0,dpr=1,aspect=4/3;
+let frame={x:0,y:0,w:1,h:1},center={x:0,y:0},birds=[],orbitBirdCount=0;
+let targetsReady=false,seekRequested=false,frameNo=0;
+let audioContext=null,audioGain=null,audioSource=null,audioGraphReady=false;
+const rand=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const smooth=t=>{t=clamp(t,0,1);return t*t*(3-2*t);};
+const ease=t=>1-Math.pow(1-clamp(t,0,1),3);
+const fract=x=>x-Math.floor(x);
+
+function randomSeed(x,y){return fract(Math.sin(x*12.9898+y*78.233)*43758.5453);}
+function resize(){
+ const W=Math.max(1,innerWidth),H=Math.max(1,innerHeight);
+ dpr=Math.min(devicePixelRatio||1,1.35);
+ canvas.width=Math.round(W*dpr);canvas.height=Math.round(H*dpr);
+ canvas.style.width=W+"px";canvas.style.height=H+"px";ctx.setTransform(dpr,0,0,dpr,0,0);
+ const maxW=W*.94,maxH=H*.76;let w=maxW,h=w/aspect;if(h>maxH){h=maxH;w=h*aspect;}
+ frame={x:(W-w)/2,y:(H-h)/2,w,h};center={x:W/2,y:H*.49};
+ if(state==="intro"||!birds.length)initBirds();
+}
+function initBirds(){
+ const W=innerWidth,H=innerHeight;
+ const count=clamp(Math.round(W*H/720),440,940);
+ orbitBirdCount=Math.min(count,Math.round(count*.34));
+ birds=[];
+ for(let i=0;i<count;i++){
+  const a=rand(0,TAU),r=i<orbitBirdCount?rand(Math.min(W,H)*.095,Math.min(W,H)*.28):rand(0,30);
+  const startX=center.x+Math.cos(a)*r*1.1;
+  const startY=center.y+Math.sin(a)*r*.68;
+  birds.push({
+   x:startX,y:startY,homeX:startX,homeY:startY,
+   targetX:startX,targetY:startY,targetAngle:a-Math.PI/2,
+   size:rand(2.5,5.0)*clamp(Math.min(W,H)/650,.76,1.3),
+   aspect:rand(.78,1.34),angle:a,phase:rand(0,TAU),flap:rand(.7,1.6),
+   drift:rand(1,5),tone:Math.random(),alpha:i<orbitBirdCount?rand(.48,.94):0,
+   targetAlpha:0,fold:rand(.3,.9),seed:Math.random()
+  });
+ }
+}
+function drawBackground(){
+ ctx.fillStyle="#000";ctx.fillRect(0,0,innerWidth,innerHeight);
+}
+function drawBird(x,y,size,aspect,angle,flap,tone,alpha,fold){
+ if(alpha<=.005)return;
+ ctx.save();ctx.translate(x,y);ctx.rotate(angle);ctx.scale(size*aspect,size);
+ ctx.globalAlpha=alpha;
+ const feather=Math.sin(flap)*.12;
+ // A tiny folded-paper crane viewed from above: pointed beak, two angular wings and folded tail.
+ ctx.beginPath();
+ ctx.moveTo(-1.18,0);
+ ctx.lineTo(-.39,-.26+feather);
+ ctx.lineTo(-.10,-.92+feather);
+ ctx.lineTo(.12,-.20);
+ ctx.lineTo(.91,-.51-feather*.7);
+ ctx.lineTo(.48,.13);
+ ctx.lineTo(.80,.53);
+ ctx.lineTo(.13,.34);
+ ctx.lineTo(-.29,.67);
+ ctx.lineTo(-.37,.20);
+ ctx.closePath();
+ ctx.fillStyle=tone<.18?"#c9c8c5":tone<.42?"#e2e0da":"#f7f5ef";ctx.fill();
+ // Fold marks give the moving silhouettes the look of actual origami, not dots or tiles.
+ ctx.beginPath();ctx.moveTo(-.39,-.26+feather);ctx.lineTo(.13,.34);ctx.lineTo(.91,-.51-feather*.7);
+ ctx.moveTo(-.37,.20);ctx.lineTo(.13,.34);ctx.lineTo(.48,.13);
+ ctx.strokeStyle="rgba(61,59,56,"+(.22+fold*.24)+")";ctx.lineWidth=.055;ctx.stroke();
+ ctx.beginPath();ctx.moveTo(-.10,-.92+feather);ctx.lineTo(.13,-.2);ctx.lineTo(-1.18,0);
+ ctx.strokeStyle="rgba(255,255,255,.66)";ctx.lineWidth=.045;ctx.stroke();
+ ctx.restore();
+}
+function drawLargeCrane(now,fade=1){
+ const W=innerWidth,H=innerHeight;
+ const s=clamp(Math.min(W,H)*.00215,.76,1.45);
+ const cx=W/2,cy=H*.48;
+ ctx.save();ctx.translate(cx,cy+Math.sin(now*.0011)*3);ctx.scale(s,s);
+ ctx.globalAlpha=fade;
+ // Broad folded wings make a clearly readable paper-crane silhouette.
+ ctx.shadowColor="rgba(255,255,255,.12)";ctx.shadowBlur=18;
+ ctx.beginPath();ctx.moveTo(0,4);ctx.lineTo(-108,-39);ctx.lineTo(-31,-25);ctx.lineTo(-70,-86);
+ ctx.lineTo(-1,-45);ctx.lineTo(23,-12);ctx.closePath();
+ ctx.fillStyle="#e8e6df";ctx.fill();ctx.shadowBlur=0;
+ ctx.beginPath();ctx.moveTo(0,4);ctx.lineTo(106,-47);ctx.lineTo(70,-86);ctx.lineTo(29,-27);ctx.lineTo(23,-12);ctx.closePath();
+ ctx.fillStyle="#faf8f2";ctx.fill();
+ ctx.beginPath();ctx.moveTo(-2,4);ctx.lineTo(-58,60);ctx.lineTo(-27,24);ctx.lineTo(9,16);ctx.closePath();
+ ctx.fillStyle="#d7d5cf";ctx.fill();
+ ctx.beginPath();ctx.moveTo(23,-12);ctx.lineTo(72,-20);ctx.lineTo(106,-47);ctx.lineTo(78,-37);ctx.closePath();
+ ctx.fillStyle="#f5f2eb";ctx.fill();
+ ctx.beginPath();ctx.moveTo(78,-37);ctx.lineTo(129,-55);ctx.lineTo(104,-30);ctx.lineTo(73,-23);ctx.closePath();
+ ctx.fillStyle="#fffdf7";ctx.fill();
+ ctx.beginPath();ctx.moveTo(-1,-45);ctx.lineTo(-31,-25);ctx.lineTo(0,4);ctx.lineTo(23,-12);ctx.closePath();
+ ctx.fillStyle="#bcbab5";ctx.fill();
+ ctx.strokeStyle="rgba(36,35,34,.46)";ctx.lineWidth=.75;
+ ctx.beginPath();ctx.moveTo(-108,-39);ctx.lineTo(-31,-25);ctx.lineTo(-70,-86);
+ ctx.moveTo(-31,-25);ctx.lineTo(-1,-45);ctx.lineTo(23,-12);ctx.lineTo(106,-47);
+ ctx.moveTo(23,-12);ctx.lineTo(72,-20);ctx.moveTo(0,4);ctx.lineTo(-58,60);ctx.stroke();
+ ctx.restore();
+}
+function drawIntro(now){
+ drawBackground();
+ const W=innerWidth,H=innerHeight,min=Math.min(W,H),cx=W/2,cy=H*.48;
+ // Loose birds circle the large crane, giving the viewer a living object to release.
+ for(let i=0;i<orbitBirdCount;i++){
+  const b=birds[i],a=b.phase+now*.00022*(i%2?1:-1);
+  const radius=randStableRadius(b)*(.94+.06*Math.sin(now*.001*b.flap+b.phase));
+  const x=cx+Math.cos(a)*radius,y=cy+Math.sin(a)*radius*.65;
+  drawBird(x,y,b.size*.8,b.aspect,a-Math.PI/2,now*.004*b.flap,b.tone,b.alpha,b.fold);
+ }
+ drawLargeCrane(now,1);
+ ctx.textAlign="center";ctx.textBaseline="middle";
+ ctx.fillStyle="rgba(255,255,255,.77)";ctx.font="italic "+clamp(W*.046,17,26)+"px Georgia,serif";
+ ctx.fillText("Let the flock go",W/2,Math.min(H-47,cy+min*.26));
+ ctx.fillStyle="rgba(255,255,255,.38)";ctx.font="9px Georgia,serif";
+ ctx.fillText("TOUCH ANYWHERE",W/2,Math.min(H-28,cy+min*.26+20));
+}
+function randStableRadius(b){return Math.min(innerWidth,innerHeight)*(.11+.15*b.seed);}
+function captureLuminance(now){
+ if(video.readyState<2||!video.videoWidth||!video.videoHeight)return false;
+ if(now-lastSample<FRAME_MS)return false;
+ lastSample=now;
+ try{
+  sourceCtx.drawImage(video,0,0,SRC_W,SRC_H);
+  const pixels=sourceCtx.getImageData(0,0,SRC_W,SRC_H).data;
+  for(let i=0,p=0;i<raw.length;i++,p+=4)raw[i]=pixels[p]*.2126+pixels[p+1]*.7152+pixels[p+2]*.0722;
+  for(let y=0;y<SRC_H;y++)for(let x=0;x<SRC_W;x++){
+   const i=y*SRC_W+x;
+   if(x===0||y===0||x===SRC_W-1||y===SRC_H-1){luma[i]=raw[i];continue;}
+   luma[i]=raw[i]*.45+(raw[i-1]+raw[i+1]+raw[i-SRC_W]+raw[i+SRC_W])*.1+
+    (raw[i-SRC_W-1]+raw[i-SRC_W+1]+raw[i+SRC_W-1]+raw[i+SRC_W+1])*.0375;
+  }
+  for(let y=1;y<SRC_H-1;y++)for(let x=1;x<SRC_W-1;x++){
+   const i=y*SRC_W+x;gx[i]=(luma[i+1]-luma[i-1])/255;gy[i]=(luma[i+SRC_W]-luma[i-SRC_W])/255;
+  }
+  buildBirdTargets();frameNo++;return true;
+ }catch(e){console.warn("Could not sample frame",e);return false;}
+}
+function buildBirdTargets(){
+ const candidates=[];
+ // Jittered samples of bright regions become individual birds. Nothing is drawn as square tiles.
+ for(let y=1;y<SRC_H-1;y+=2)for(let x=1;x<SRC_W-1;x+=2){
+  const i=y*SRC_W+x,v=luma[i],hash=randomSeed(x+frameNo*.01,y);
+  const probability=clamp((v-48)/145,0,.98);
+  if(hash>probability)continue;
+  const jx=(randomSeed(x+7,y+13)-.5)*1.25,jy=(randomSeed(x+31,y+5)-.5)*1.25;
+  let angle=Math.atan2(gy[i],gx[i])+Math.PI/2;
+  if(!Number.isFinite(angle))angle=0;
+  candidates.push({x:clamp(x+jx,0,SRC_W-1),y:clamp(y+jy,0,SRC_H-1),angle,v});
+ }
+ candidates.sort((a,b)=>a.y-b.y||a.x-b.x);
+ const count=Math.min(birds.length,candidates.length);
+ for(let i=0;i<birds.length;i++){
+  const b=birds[i];
+  if(i<count){
+   const t=candidates[Math.min(candidates.length-1,Math.floor((i+.43)*candidates.length/count))];
+   b.targetX=frame.x+t.x/SRC_W*frame.w;
+   b.targetY=frame.y+t.y/SRC_H*frame.h;
+   b.targetAngle=t.angle;
+   b.targetAlpha=clamp((t.v-34)/110,.36,1);
+  }else{
+   const offset=i-count;
+   b.targetX=frame.x+randomSeed(offset,frameNo+9)*frame.w;
+   b.targetY=frame.y+randomSeed(offset+17,frameNo+37)*frame.h;
+   b.targetAngle=b.angle;
+   b.targetAlpha=0;
+  }
+ }
+ targetsReady=true;
+}
+function createAudioGraph(){
+ try{
+  const AC=window.AudioContext||window.webkitAudioContext;
+  if(!AC)return;
+  audioContext=new AC();audioGain=audioContext.createGain();audioGain.gain.value=0;
+  audioSource=audioContext.createMediaElementSource(video);
+  audioSource.connect(audioGain);audioGain.connect(audioContext.destination);
+  const resumed=audioContext.resume();if(resumed&&resumed.catch)resumed.catch(()=>{});
+  audioGraphReady=true;
+ }catch(_){audioGraphReady=false;audioContext=null;audioGain=null;}
+}
+function prepareSilentFrame(){
+ try{
+  video.muted=!audioGraphReady;video.volume=audioGraphReady?1:0;
+  const p=video.play();
+  if(p&&p.then)p.then(()=>{
+   video.pause();
+   try{if(video.currentTime>.015)video.currentTime=0;}catch(_){}
+  }).catch(()=>{});
+ }catch(_){}
+}
+function begin(){
+ if(state!=="intro"){if(state==="playing"&&video.paused)video.play().catch(()=>{});return;}
+ state="forming";started=performance.now();lastSample=0;targetsReady=false;seekRequested=false;
+ for(let i=0;i<birds.length;i++){
+  const b=birds[i],a=b.phase+started*.00022*(i%2?1:-1),r=randStableRadius(b);
+  b.x=center.x+Math.cos(a)*r;b.y=center.y+Math.sin(a)*r*.65;
+  b.targetX=b.x;b.targetY=b.y;b.alpha=i<orbitBirdCount?b.alpha:0;b.targetAlpha=0;
+ }
+ createAudioGraph();
+ prepareSilentFrame();
+}
+function startMovie(now){
+ state="playing";lastSample=0;
+ try{video.pause();video.currentTime=0;}catch(_){}
+ video.muted=!audioGraphReady;video.volume=1;
+ const p=video.play();if(p&&p.catch)p.catch(()=>{video.muted=true;});
+ if(audioContext&&audioGain){
+  audioContext.resume().catch(()=>{});
+  audioGain.gain.cancelScheduledValues(audioContext.currentTime);
+  audioGain.gain.setTargetAtTime(1,audioContext.currentTime,.12);
+ }
+}
+function drawFlock(now,forming){
+ const p=forming?ease((now-started)/FORM_MS):1;
+ const W=innerWidth,H=innerHeight;
+ for(let i=0;i<birds.length;i++){
+  const b=birds[i];
+  if(forming){
+   const pull=.055+p*.24;
+   const turbulent=(1-p)*Math.sin(now*.005*b.flap+b.phase)*b.drift*1.8;
+   b.x+=(b.targetX-b.x)*pull+Math.cos(b.phase+now*.0015)*turbulent*.16;
+   b.y+=(b.targetY-b.y)*pull+Math.sin(b.phase+now*.0017)*turbulent*.16;
+   b.alpha+=(b.targetAlpha-b.alpha)*.09;
+  }else{
+   b.x+=(b.targetX-b.x)*.30;
+   b.y+=(b.targetY-b.y)*.30;
+   b.alpha+=(b.targetAlpha-b.alpha)*.25;
+  }
+  const dx=b.targetX-b.x,dy=b.targetY-b.y;
+  const velocityAngle=Math.atan2(dy,dx);
+  const orient=forming?b.angle+(b.targetAngle-b.angle)*p:b.targetAngle;
+  const flap=now*.004*b.flap+b.phase+Math.min(1,Math.hypot(dx,dy)*.012);
+  drawBird(b.x,b.y,b.size,b.aspect,orient+Math.sin(flap)*.13,flap,b.tone,b.alpha,b.fold);
+ }
+ if(forming){
+  drawLargeCrane(now,Math.max(0,1-smooth(p*.95)));
+  if(p>.77){
+   ctx.globalAlpha=smooth((p-.77)/.23)*.12;
+   ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);ctx.globalAlpha=1;
+  }
+ }
+}
+function tick(now){
+ if(state==="intro"){drawIntro(now);}
+ else{
+  if(state==="forming"&&!targetsReady){
+   // Let the browser decode and seek back to frame zero before shaping the first flock.
+   if(video.readyState>=2&&!video.seeking){
+    if(video.currentTime>.05){
+     if(!seekRequested){seekRequested=true;video.pause();try{video.currentTime=0;}catch(_){}}
+    }else captureLuminance(now);
+   }
+  }else if(state==="playing")captureLuminance(now);
+  drawBackground();
+  if(state==="forming"){
+   drawFlock(now,true);
+   if(now-started>=FORM_MS&&targetsReady)startMovie(now);
+   else if(now-started>3600&&!targetsReady){
+    for(let i=0;i<birds.length;i++){const b=birds[i];b.targetX=frame.x+randomSeed(i,4)*frame.w;b.targetY=frame.y+randomSeed(i,9)*frame.h;b.targetAlpha=0;}
+    targetsReady=true;
+   }
+  }else drawFlock(now,false);
+ }
+ requestAnimationFrame(tick);
+}
+video.addEventListener("loadedmetadata",()=>{aspect=video.videoWidth/video.videoHeight||4/3;resize();});
+video.addEventListener("error",()=>{errorBox.style.display="block";});
+document.addEventListener("pointerdown",begin,{passive:true});
+window.addEventListener("resize",resize);
+resize();requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
