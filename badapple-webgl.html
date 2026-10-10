@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#08090c">
+<title>Bad Apple — GPU Raster</title>
+<style>
+  :root { color-scheme:dark; --bg:#08090c; --panel:rgba(18,20,27,.88); --line:rgba(255,255,255,.12); --muted:#858b9b; --text:#f4f5f8; --accent:#e7ff67; }
+  * { box-sizing:border-box; }
+  html,body { margin:0;width:100%;height:100%;background:var(--bg);color:var(--text); }
+  body { font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden; }
+  button,input { font:inherit; } button { color:inherit; }
+  .app { display:grid;grid-template-rows:72px minmax(0,1fr) auto;width:100%;height:100%; }
+  header { display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 clamp(16px,4vw,48px);border-bottom:1px solid var(--line);background:rgba(8,9,12,.88);z-index:2; }
+  .brand { display:flex;align-items:center;gap:12px;min-width:0; }
+  .brand-mark { display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:var(--accent);color:#10120a;font-weight:950;letter-spacing:-2px; }
+  .brand-title { font-size:13px;font-weight:850;letter-spacing:.16em;line-height:1.3; }
+  .brand-sub { color:var(--muted);font-size:10px;letter-spacing:.13em;margin-top:3px; }
+  .status { display:flex;align-items:center;gap:8px;color:var(--muted);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.12em;text-transform:uppercase; }
+  .led { width:7px;height:7px;border-radius:50%;background:#626777; } .led.live { background:var(--accent);box-shadow:0 0 12px #e7ff6755; }
+  .stage { min-height:0;position:relative;display:grid;place-items:center;overflow:hidden;background:radial-gradient(ellipse at center,#11141b 0%,#08090c 68%); }
+  #screen { display:block;width:1px;height:1px;image-rendering:pixelated;outline:none; }
+  #video { position:fixed;width:1px;height:1px;left:-10px;top:-10px;opacity:0;pointer-events:none; }
+  .intro { position:absolute;inset:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg,rgba(8,9,12,.08),rgba(8,9,12,.44));transition:opacity .35s ease,visibility .35s ease; }
+  .intro.hidden { opacity:0;visibility:hidden;pointer-events:none; }
+  .intro-card { text-align:center;max-width:440px; }
+  .eyebrow { color:var(--accent);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.24em;text-transform:uppercase; }
+  h1 { margin:12px 0 10px;font-size:clamp(32px,6vw,62px);line-height:.96;letter-spacing:-.07em;font-weight:950; }
+  .intro p { margin:0 auto 24px;max-width:310px;color:#a7adbb;line-height:1.6;font-size:13px; }
+  .primary { border:0;border-radius:999px;padding:13px 20px;color:#11130a;background:var(--accent);font-size:12px;font-weight:850;letter-spacing:.05em;cursor:pointer;transition:transform .15s ease,filter .15s ease; }
+  .primary:hover { transform:translateY(-2px);filter:brightness(1.08); } .primary:active { transform:translateY(0); }
+  footer { z-index:2;border-top:1px solid var(--line);background:var(--panel);backdrop-filter:blur(20px);padding:14px clamp(12px,3vw,36px) 16px; }
+  .control-row { display:flex;align-items:center;justify-content:space-between;gap:16px; }
+  .modes { display:flex;align-items:center;flex-wrap:wrap;gap:5px; }
+  .mode-label { margin:0 10px 0 0;color:var(--muted);font-size:9px;letter-spacing:.16em;font-weight:800; }
+  .mode { border:1px solid transparent;background:transparent;color:#969bab;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:11px;font-weight:700; }
+  .mode:hover { color:white;background:#ffffff0b; } .mode.active { color:var(--accent);background:#e7ff6712;border-color:#e7ff6738; }
+  .actions { display:flex;gap:7px;align-items:center; }
+  .icon-btn { display:grid;place-items:center;width:36px;height:34px;border-radius:9px;border:1px solid var(--line);background:#ffffff06;cursor:pointer;font-size:14px; }
+  .icon-btn:hover { border-color:#ffffff40;background:#ffffff10; }
+  .adjustments { display:flex;align-items:center;justify-content:space-between;gap:22px;margin-top:13px;padding-top:12px;border-top:1px solid var(--line); }
+  .range-group { display:flex;align-items:center;gap:10px;min-width:0;flex:1;max-width:320px; }
+  .range-group label { white-space:nowrap;color:var(--muted);font-size:10px; }
+  .range-group input { width:100%;min-width:30px;accent-color:var(--accent);cursor:pointer; }
+  output { width:28px;color:#c9ced9;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;text-align:right; }
+  .hint { color:#626877;font-size:10px;text-align:right; }
+  .toast { position:absolute;left:50%;bottom:18px;transform:translateX(-50%);padding:10px 14px;max-width:calc(100% - 28px);border:1px solid var(--line);border-radius:10px;background:#141720ed;color:#d8dbe5;font-size:12px;text-align:center;opacity:0;pointer-events:none;transition:opacity .2s; }
+  .toast.show { opacity:1; }
+  @media (max-width:650px) {
+    .app { grid-template-rows:60px minmax(0,1fr) auto; } header { padding:0 15px; } .status { font-size:9px; }
+    footer { padding:12px 12px calc(12px + env(safe-area-inset-bottom));position:relative; }
+    .control-row { align-items:flex-start;flex-direction:column;gap:10px; } .modes { width:100%; } .mode-label { width:100%;margin-bottom:3px; }
+    .actions { position:absolute;right:12px;top:8px; } .adjustments { gap:14px;align-items:flex-start;flex-direction:column; }
+    .range-group { width:100%;max-width:none; } .hint { display:none; }
+  }
+  @media (prefers-reduced-motion:reduce) { *,*::before,*::after { transition:none!important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><div class="brand-mark">BA</div><div><div class="brand-title">BAD APPLE!!</div><div class="brand-sub">GPU RASTER EXPERIMENT</div></div></div>
+    <div class="status"><span class="led" id="led"></span><span id="statusText">READY / WEBGL</span></div>
+  </header>
+  <main class="stage" id="stage">
+    <canvas id="screen" aria-label="Bad Apple GPU pixel renderer"></canvas>
+    <video id="video" playsinline preload="auto" loop><source src="bad_apple.mp4" type="video/mp4"></video>
+    <div class="intro" id="intro"><div class="intro-card">
+      <div class="eyebrow">A different way to see it</div><h1>BAD<br>APPLE.</h1>
+      <p>Kein DOM-Pixelregen. Jeder Frame wird als Videotextur direkt auf der GPU neu gezeichnet.</p>
+      <button class="primary" id="startBtn">▶ &nbsp; START EXPERIENCE</button>
+    </div></div>
+    <div class="toast" id="toast" role="status"></div>
+  </main>
+  <footer>
+    <div class="control-row">
+      <div class="modes"><span class="mode-label">RENDER MODE</span>
+        <button class="mode active" data-mode="0" aria-pressed="true">01 / PIXEL</button>
+        <button class="mode" data-mode="1" aria-pressed="false">02 / DOTS</button>
+        <button class="mode" data-mode="2" aria-pressed="false">03 / CONTOUR</button>
+        <button class="mode" data-mode="3" aria-pressed="false">04 / BARS</button>
+      </div>
+      <div class="actions">
+        <button class="icon-btn" id="playBtn" aria-label="Pause oder fortsetzen" title="Pause / fortsetzen">Ⅱ</button>
+        <button class="icon-btn" id="muteBtn" aria-label="Ton umschalten" title="Ton umschalten">♫</button>
+        <button class="icon-btn" id="fullBtn" aria-label="Vollbild" title="Vollbild">⛶</button>
+      </div>
+    </div>
+    <div class="adjustments">
+      <div class="range-group"><label for="cellSize">CELL SIZE</label><input id="cellSize" type="range" min="2" max="22" value="7"><output id="cellOut">7 px</output></div>
+      <div class="range-group"><label for="threshold">THRESHOLD</label><input id="threshold" type="range" min="20" max="235" value="128"><output id="thresholdOut">128</output></div>
+      <div class="hint">WEBGL · SHADER-BASED · NO DOM TILES</div>
+    </div>
+  </footer>
+</div>
+
+<script id="vertex-shader" type="x-shader/x-vertex">
+attribute vec2 a_position;
+varying vec2 v_uv;
+void main() {
+  gl_Position = vec4(a_position, 0.0, 1.0);
+  v_uv = (a_position + 1.0) * 0.5;
+}
+</script>
+<script id="fragment-shader" type="x-shader/x-fragment">
+precision highp float;
+varying vec2 v_uv;
+uniform sampler2D u_video;
+uniform vec2 u_resolution;
+uniform float u_cellSize;
+uniform float u_threshold;
+uniform int u_mode;
+
+float luminance(vec2 uv) {
+  vec3 color = texture2D(u_video, clamp(uv, 0.001, 0.999)).rgb;
+  return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+void main() {
+  vec2 cells = max(vec2(1.0), u_resolution / u_cellSize);
+  vec2 cell = floor(v_uv * cells);
+  vec2 local = fract(v_uv * cells) - 0.5;
+  vec2 uv = (cell + 0.5) / cells;
+  float l = luminance(uv);
+  float result = 0.0;
+  if (u_mode == 0) {
+    result = step(u_threshold, l);
+  } else if (u_mode == 1) {
+    float radius = 0.49 * sqrt(clamp((l - u_threshold * 0.20) / (1.0 - u_threshold * 0.20), 0.0, 1.0));
+    result = 1.0 - smoothstep(radius - 0.012, radius + 0.012, length(local));
+  } else if (u_mode == 2) {
+    vec2 stepUV = 1.0 / cells;
+    float gx = abs(luminance(uv + vec2(stepUV.x, 0.0)) - luminance(uv - vec2(stepUV.x, 0.0)));
+    float gy = abs(luminance(uv + vec2(0.0, stepUV.y)) - luminance(uv - vec2(0.0, stepUV.y)));
+    result = smoothstep(0.10, 0.34, max(gx, gy));
+  } else {
+    float height = 0.48 * clamp((l - u_threshold * 0.12) / (1.0 - u_threshold * 0.12), 0.0, 1.0);
+    result = 1.0 - smoothstep(height - 0.018, height + 0.018, abs(local.y));
+  }
+  gl_FragColor = vec4(vec3(result), 1.0);
+}
+</script>
+
+<script>
+(() => {
+  "use strict";
+  const canvas = document.getElementById("screen");
+  const stage = document.getElementById("stage");
+  const video = document.getElementById("video");
+  const intro = document.getElementById("intro");
+  const startBtn = document.getElementById("startBtn");
+  const statusText = document.getElementById("statusText");
+  const led = document.getElementById("led");
+  const toast = document.getElementById("toast");
+  const playBtn = document.getElementById("playBtn");
+  const muteBtn = document.getElementById("muteBtn");
+  const fullBtn = document.getElementById("fullBtn");
+  const cellInput = document.getElementById("cellSize");
+  const cellOut = document.getElementById("cellOut");
+  const thresholdInput = document.getElementById("threshold");
+  const thresholdOut = document.getElementById("thresholdOut");
+  const modeButtons = [...document.querySelectorAll(".mode")];
+  const gl = canvas.getContext("webgl", {alpha:false,antialias:false,depth:false,stencil:false,premultipliedAlpha:false,preserveDrawingBuffer:false});
+
+  let aspect = 4 / 3, dpr = 1, mode = 0;
+  let cellSize = Number(cellInput.value), threshold = Number(thresholdInput.value) / 255;
+  let started = false, textureReady = false, raf = 0, toastTimer = 0;
+  let program, texture, buffer, uniforms = {};
+
+  function showToast(message) {
+    toast.textContent = message;
+    toast.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove("show"), 2600);
+  }
+  if (!gl) {
+    statusText.textContent = "WEBGL UNAVAILABLE";
+    startBtn.disabled = true;
+    startBtn.textContent = "WEBGL NICHT VERFÜGBAR";
+    showToast("Dieser Browser unterstützt WebGL nicht. Bitte öffne die Seite in einem aktuellen Browser.");
+    return;
+  }
+
+  function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const message = gl.getShaderInfoLog(shader) || "Unbekannter Shaderfehler";
+      gl.deleteShader(shader);
+      throw new Error(message);
+    }
+    return shader;
+  }
+  function initGL() {
+    const vertex = compileShader(gl.VERTEX_SHADER, document.getElementById("vertex-shader").textContent);
+    const fragment = compileShader(gl.FRAGMENT_SHADER, document.getElementById("fragment-shader").textContent);
+    program = gl.createProgram();
+    gl.attachShader(program, vertex);
+    gl.attachShader(program, fragment);
+    gl.linkProgram(program);
+    gl.deleteShader(vertex);
+    gl.deleteShader(fragment);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || "WebGL-Programm konnte nicht verknüpft werden");
+
+    gl.useProgram(program);
+    buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+    const position = gl.getAttribLocation(program, "a_position");
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+
+    texture = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    uniforms = {
+      video:gl.getUniformLocation(program,"u_video"),
+      resolution:gl.getUniformLocation(program,"u_resolution"),
+      cellSize:gl.getUniformLocation(program,"u_cellSize"),
+      threshold:gl.getUniformLocation(program,"u_threshold"),
+      mode:gl.getUniformLocation(program,"u_mode")
+    };
+    gl.uniform1i(uniforms.video, 0);
+    gl.clearColor(0,0,0,1);
+  }
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const maxWidth = Math.max(1, stage.clientWidth - 22);
+    const maxHeight = Math.max(1, stage.clientHeight - 22);
+    let width = Math.min(maxWidth, maxHeight * aspect);
+    let height = width / aspect;
+    if (height > maxHeight) { height = maxHeight; width = height * aspect; }
+    canvas.style.width = Math.floor(width) + "px";
+    canvas.style.height = Math.floor(height) + "px";
+    canvas.width = Math.max(1, Math.floor(width * dpr));
+    canvas.height = Math.max(1, Math.floor(height * dpr));
+    if (gl && program) {
+      gl.viewport(0,0,canvas.width,canvas.height);
+      gl.useProgram(program);
+      gl.uniform2f(uniforms.resolution,canvas.width,canvas.height);
+      draw();
+    }
+  }
+  function draw() {
+    if (!gl || !program) return;
+    gl.useProgram(program);
+    gl.viewport(0,0,canvas.width,canvas.height);
+    gl.uniform2f(uniforms.resolution,canvas.width,canvas.height);
+    gl.uniform1f(uniforms.cellSize,Math.max(1,cellSize*dpr));
+    gl.uniform1f(uniforms.threshold,threshold);
+    gl.uniform1i(uniforms.mode,mode);
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+      try {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D,texture);
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,video);
+        textureReady = true;
+      } catch (error) { showToast("Das Videobild konnte nicht an die GPU übergeben werden."); }
+    }
+    if (!textureReady) { gl.clear(gl.COLOR_BUFFER_BIT); return; }
+    gl.drawArrays(gl.TRIANGLES,0,6);
+  }
+  function frameLoop() {
+    draw();
+    if (started && !video.paused && !video.ended) raf = requestAnimationFrame(frameLoop);
+    else raf = 0;
+  }
+  function beginLoop() {
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(frameLoop);
+  }
+  async function start() {
+    if (started && video.paused) {
+      try {
+        await video.play();
+        playBtn.textContent = "Ⅱ";
+        statusText.textContent = "PLAYING / WEBGL";
+        led.classList.add("live");
+        beginLoop();
+      } catch { showToast("Tippe noch einmal auf Start, um die Wiedergabe zu erlauben."); }
+      return;
+    }
+    if (started) return;
+    try {
+      video.muted = false;
+      video.volume = 1;
+      await video.play();
+      started = true;
+      intro.classList.add("hidden");
+      statusText.textContent = "PLAYING / WEBGL";
+      led.classList.add("live");
+      playBtn.textContent = "Ⅱ";
+      beginLoop();
+    } catch { showToast("Video konnte nicht gestartet werden. Prüfe, ob bad_apple.mp4 erreichbar ist."); }
+  }
+  function setMode(nextMode) {
+    mode = nextMode;
+    modeButtons.forEach(button => {
+      const active = Number(button.dataset.mode) === mode;
+      button.classList.toggle("active",active);
+      button.setAttribute("aria-pressed",String(active));
+    });
+    draw();
+  }
+
+  startBtn.addEventListener("click",start);
+  video.addEventListener("loadedmetadata",() => {
+    aspect = video.videoWidth / video.videoHeight || 4/3;
+    resize();
+    statusText.textContent = "READY / WEBGL";
+  });
+  video.addEventListener("loadeddata",draw);
+  video.addEventListener("playing",() => {
+    led.classList.add("live");
+    if (!raf) beginLoop();
+  });
+  video.addEventListener("pause",() => {
+    led.classList.remove("live");
+    if (started) statusText.textContent = "PAUSED / WEBGL";
+    draw();
+  });
+  video.addEventListener("ended",() => {
+    draw();
+    video.currentTime = 0;
+    start();
+  });
+  video.addEventListener("error",() => {
+    statusText.textContent = "VIDEO NOT FOUND";
+    showToast("bad_apple.mp4 wurde nicht gefunden. Die Videodatei muss neben dieser HTML-Datei im Repository liegen.");
+  });
+  modeButtons.forEach(button => button.addEventListener("click",() => setMode(Number(button.dataset.mode))));
+  cellInput.addEventListener("input",() => { cellSize = Number(cellInput.value); cellOut.value = cellSize + " px"; draw(); });
+  thresholdInput.addEventListener("input",() => { threshold = Number(thresholdInput.value)/255; thresholdOut.value = thresholdInput.value; draw(); });
+  playBtn.addEventListener("click",async () => {
+    if (!started) return start();
+    if (video.paused) {
+      try {
+        await video.play();
+        playBtn.textContent = "Ⅱ";
+        statusText.textContent = "PLAYING / WEBGL";
+        beginLoop();
+      } catch { showToast("Wiedergabe konnte nicht fortgesetzt werden."); }
+    } else {
+      video.pause();
+      playBtn.textContent = "▶";
+    }
+  });
+  muteBtn.addEventListener("click",() => {
+    video.muted = !video.muted;
+    muteBtn.textContent = video.muted ? "♫̸" : "♫";
+    muteBtn.setAttribute("aria-label",video.muted ? "Ton einschalten" : "Ton ausschalten");
+  });
+  fullBtn.addEventListener("click",async () => {
+    try {
+      if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+      else await document.exitFullscreen();
+    } catch { showToast("Vollbild wird von diesem Browser nicht unterstützt."); }
+  });
+  document.addEventListener("visibilitychange",() => { if (!document.hidden && started && !video.paused) beginLoop(); });
+  window.addEventListener("resize",resize);
+  window.addEventListener("orientationchange",() => setTimeout(resize,100));
+
+  try { initGL(); resize(); }
+  catch (error) {
+    statusText.textContent = "SHADER ERROR";
+    showToast("WebGL-Shaderfehler: " + error.message);
+    console.error(error);
+  }
+})();
+</script>
+</body>
+</html>
