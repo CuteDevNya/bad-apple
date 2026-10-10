@@ -18,15 +18,15 @@
   const pages = [
     "badapple-elements.html",
     "badapple-xp-popups.html",
-    "badapple-prism-shards.html"
+    "badapple-paper-theatre.html"
   ];
-  const key = "badAppleExperienceShuffleV2";
+  const key = "badAppleExperienceShuffleV3";
   const frame = document.getElementById("page");
   let previous = "";
   try { previous = localStorage.getItem(key) || ""; } catch (_) {}
 
-  // Select randomly from the original, XP-popup and prismatic-shard experiences.
-  // Prefer a different page than last time so both designs remain easy to discover.
+  // Select randomly from the original, XP-popup and paper-shadow-theatre experiences.
+  // Prefer a different page than last time so the experiences take turns.
   let choices = pages.filter(path => path !== previous);
   if (!choices.length) choices = pages;
   let index;
