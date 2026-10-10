@@ -302,8 +302,15 @@
   }
 
   function drawPopupBurst(now) {
+    if(burstSettled) return;
     const W=window.innerWidth,H=window.innerHeight;
     playbackCtx.clearRect(0,0,W,H);
+    if(now>=burstAnimationEnd) {
+      for(const item of burstWindows) drawPopupTexture(item,item.index,1);
+      burstSettled=true;
+      playbackCtx.globalAlpha=1;
+      return;
+    }
     for(const item of burstWindows) {
       if(now<item.showAt) continue;
       const alpha=clamp((now-item.showAt)/POPUP_FADE_MS,0,1);
@@ -337,6 +344,8 @@
   let frameRect = {x:0,y:0,w:1,h:1};
    let windows = [];
   let burstWindows = [];
+  let burstAnimationEnd = 0;
+  let burstSettled = false;
   let morphStartTime = 0;
   let audioContext = null, audioGain = null, audioSource = null;
   let playbackPrimed = false;
@@ -449,6 +458,8 @@
     playbackCanvas.style.display="block";
     const W=window.innerWidth,H=window.innerHeight;
     const startedAt=performance.now();
+    burstAnimationEnd=startedAt+(MAX_WINDOWS-1)*POPUP_STAGGER_MS+POPUP_FADE_MS;
+    burstSettled=false;
     burstWindows=[];
     windows=[];
     // Draw cached popup images on a single canvas rather than creating thousands of DOM elements.
@@ -712,6 +723,8 @@
     // Swap hundreds of live DOM windows for a single canvas at playback time.
     for(const win of windows) win.remove();
     windows=[];
+    burstWindows=[];
+    burstSettled=true;
     state="playing";
     layer.classList.remove("morph");
     layer.classList.add("playing");
@@ -779,7 +792,7 @@
    video.addEventListener("error",()=>console.error("bad_apple.mp4 could not be loaded from the repository root."));
   window.addEventListener("resize",()=>{
     frameRect=getFrameRect();
-    if(state==="playing") resizePlaybackCanvas();
+    if(state==="burst"||state==="morph"||state==="playing") resizePlaybackCanvas();
     if(state==="intro") {
       const win=document.getElementById("intro-window");
       if(win) win.style.width="min(392px,calc(100vw - 30px))";
