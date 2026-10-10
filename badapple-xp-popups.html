@@ -84,7 +84,7 @@
   #intro-window .xp-message { font-size:12px;line-height:1.35; }
   #intro-window .xp-footer { height:43px;padding:5px 12px 9px; }
   #intro-window .xp-ok { width:76px;height:23px;font-size:11px; }
-  #popup-layer.morph .xp-window { transition:left 820ms cubic-bezier(.16,.88,.23,1),top 820ms cubic-bezier(.16,.88,.23,1),width 820ms cubic-bezier(.16,.88,.23,1),height 820ms cubic-bezier(.16,.88,.23,1),opacity 520ms ease; }
+  #popup-layer.morph .xp-window { transition:top 840ms cubic-bezier(.16,.88,.23,1),height 840ms cubic-bezier(.16,.88,.23,1); }
   #popup-layer.playing .xp-window { transition:none !important; }
   @media(max-width:420px) {
     #intro-window { height:178px; }
@@ -123,8 +123,10 @@
   const intro = document.getElementById("intro-wrap");
   const video = document.getElementById("video");
   const MAX_WINDOWS = 240;
-  const CELL_FACTOR = 8;
+  const CELL_FACTOR = 4;
   const THRESHOLD = 127;
+  // Bias mixed cells slightly toward keeping thin bright strokes visible as popups.
+  const DARK_CELL_RATIO = 0.78;
   const MORPH_HOLD_MS = 1000;
   const MORPH_MS = 840;
   const POPUP_STAGGER_MS = 12;
@@ -327,16 +329,18 @@
       for(let gx=0;gx<gw;gx++) {
         const sx0 = Math.floor(gx*sw/gw);
         const sx1 = Math.max(sx0+1,Math.ceil((gx+1)*sw/gw));
-        let dark = false;
-        // Conservative area reduction: any dark source pixel reserves the whole cell as silhouette.
-        for(let sy=sy0;sy<sy1&&!dark;sy++) {
+        let darkCount = 0;
+        let sampleCount = 0;
+        for(let sy=sy0;sy<sy1;sy++) {
           let p=(sy*sw+sx0)*4;
           for(let sx=sx0;sx<sx1;sx++,p+=4) {
             const lum=rgba[p]*0.2126+rgba[p+1]*0.7152+rgba[p+2]*0.0722;
-            if(lum<THRESHOLD) { dark=true;break; }
+            if(lum<THRESHOLD) darkCount++;
+            sampleCount++;
           }
         }
-        mask[gy*gw+gx]=dark?1:0;
+        // A single dark edge pixel no longer swallows a whole thin bright stripe.
+        mask[gy*gw+gx]=(darkCount/Math.max(1,sampleCount)>=DARK_CELL_RATIO)?1:0;
       }
     }
     return mask;
@@ -348,21 +352,18 @@
       const y0=Math.floor(y*bh/nh),y1=Math.max(y0+1,Math.ceil((y+1)*bh/nh));
       for(let x=0;x<nw;x++) {
         const x0=Math.floor(x*bw/nw),x1=Math.max(x0+1,Math.ceil((x+1)*bw/nw));
-        let filled=false;
-        for(let yy=y0;yy<y1&&!filled;yy++) {
-          for(let xx=x0;xx<x1;xx++) if(base[yy*bw+xx]) { filled=true;break; }
+        let darkCount=0,total=0;
+        for(let yy=y0;yy<y1;yy++) {
+          for(let xx=x0;xx<x1;xx++) {
+            darkCount+=base[yy*bw+xx];
+            total++;
+          }
         }
-        reduced[y*nw+x]=filled?1:0;
+        // Fractional coverage avoids the old OR+dilation step swallowing narrow bright gaps.
+        reduced[y*nw+x]=(darkCount/Math.max(1,total)>=DARK_CELL_RATIO)?1:0;
       }
     }
-    // A one-cell guard band keeps popup borders from spilling into the dark silhouette.
-    const dilated=new Uint8Array(nw*nh);
-    for(let y=0;y<nh;y++) for(let x=0;x<nw;x++) {
-      if(!reduced[y*nw+x]) continue;
-      for(let yy=Math.max(0,y-1);yy<=Math.min(nh-1,y+1);yy++)
-        for(let xx=Math.max(0,x-1);xx<=Math.min(nw-1,x+1);xx++) dilated[yy*nw+xx]=1;
-    }
-    return dilated;
+    return reduced;
   }
 
   function mergeRects(input) {
@@ -553,51 +554,34 @@
   }
 
   function startMorph() {
-    if(state!=="burst" && state!=="waiting-frame") return;
-    if(!firstTiles) {
-      // If video metadata has not loaded yet, hold the popups until the first frame is available.
-      state="waiting-frame";
-      return;
-    }
+    if(state!=="burst") return;
     state="morph";
     layer.classList.remove("burst");
     layer.classList.add("morph");
-    const targetCount = firstTiles.length;
-    const collapseTarget = {
-      x:window.innerWidth/2,
-      y:window.innerHeight/2,
-      w:2,
-      h:2
-    };
-    for(let i=0;i<windows.length;i++) {
-      const targetIndex = targetCount ? i % targetCount : 0;
-      const target = targetCount ? firstTiles[targetIndex] : collapseTarget;
 
-      // Excess windows land exactly on a real target and share its contents;
-      // after they overlap, startMovie removes the redundant copies.
-      if(targetCount && i >= targetCount) {
-        windows[i].innerHTML = windows[targetIndex].innerHTML;
-      }
-      windows[i].style.transition = "";
-      setWindowRect(windows[i],target,true);
+    // Force the browser to register the current popup positions before the CRT-style collapse.
+    for(const win of windows) win.style.transition="";
+    void layer.offsetWidth;
+
+    for(const win of windows) {
+      const top=parseFloat(win.style.top)||0;
+      const height=parseFloat(win.style.height)||0;
+      // Move the top edge down by half the height so each window collapses toward its own center line.
+      win.style.top=(top+height/2)+"px";
+      win.style.height="0px";
+      win.style.opacity="1";
     }
-    morphTimer=window.setTimeout(startMovie,MORPH_MS + 20);
+    morphTimer=window.setTimeout(startMovie,MORPH_MS + 30);
   }
 
   function startMovie() {
-    if(state!=="morph"&&state!=="waiting-frame") return;
-    if(!firstTiles) return;
-    // Keep only the windows needed by the first frame. The extras have already
-    // travelled to identical rectangles and visually overlap before being removed.
-    const neededCount = firstTiles.length;
-    if(windows.length > neededCount) {
-      for(const extra of windows.slice(neededCount)) extra.remove();
-      windows = windows.slice(0,neededCount);
-    }
+    if(state!=="morph") return;
+    // The windows have collapsed to center lines; remove them before the movie draws its first real frame.
+    for(const win of windows) win.remove();
+    windows=[];
     state="playing";
     layer.classList.remove("morph");
     layer.classList.add("playing");
-    for(const win of windows) win.style.transition = "none";
     try {
       video.pause();
       video.currentTime=0;
@@ -652,15 +636,19 @@
     try {
       c.drawImage(video,0,0,sourceW,sourceH);
       const data=c.getImageData(0,0,sourceW,sourceH).data;
-      let tiles=makeTiles(data,MAX_WINDOWS);
-      if(!tiles.length) return;
-      ensureWindowCount(tiles.length);
-      if(tiles.length>windows.length) tiles=makeTiles(data,windows.length);
-      for(let i=0;i<windows.length;i++) {
-        // If a frame needs fewer rectangles, the surplus windows stack exactly
-        // on existing targets instead of shrinking toward the screen centre.
-        setWindowRect(windows[i],tiles[i % tiles.length],true);
+      const tiles=makeTiles(data,MAX_WINDOWS);
+      if(!tiles.length) {
+        for(const win of windows) win.remove();
+        windows=[];
+        return;
       }
+      // Match the actual light regions in each frame: no surplus windows are left stacked on top.
+      if(windows.length>tiles.length) {
+        for(const extra of windows.slice(tiles.length)) extra.remove();
+        windows=windows.slice(0,tiles.length);
+      }
+      ensureWindowCount(tiles.length);
+      for(let i=0;i<tiles.length;i++) setWindowRect(windows[i],tiles[i],true);
     } catch(error) {
       console.error("Could not update popup layout.",error);
     } finally {
