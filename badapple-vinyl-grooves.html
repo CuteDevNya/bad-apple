@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#35281f">
+<title>Bad Apple — The Moving Record</title>
+<style>
+  * { box-sizing:border-box; }
+  html,body { width:100%;height:100%;margin:0;overflow:hidden;background:#2a211b; }
+  body { position:fixed;inset:0;touch-action:manipulation;user-select:none;-webkit-user-select:none; }
+  #turntable { display:block;width:100%;height:100%; }
+  #video { position:fixed;width:1px;height:1px;left:-30px;top:-30px;opacity:0;pointer-events:none; }
+  #error { display:none;position:fixed;left:14px;right:14px;bottom:14px;padding:10px 12px;
+    color:#f0dfc0;background:#34231b;border:1px solid #b3925c;font:12px/1.5 Georgia,serif;text-align:center; }
+</style>
+</head>
+<body>
+<canvas id="turntable" aria-label="Ein alter Plattenspieler, dessen Schallplattenrillen das Bad Apple Video bilden"></canvas>
+<video id="video" playsinline preload="auto" loop src="bad_apple.mp4"></video>
+<div id="error">„bad_apple.mp4“ konnte nicht geladen werden. Bitte prüfe, ob die Datei neben dieser HTML-Datei liegt.</div>
+<script>
+(() => {
+  "use strict";
+  const canvas=document.getElementById("turntable");
+  const ctx=canvas.getContext("2d",{alpha:false,desynchronized:true});
+  const video=document.getElementById("video");
+  const errorBox=document.getElementById("error");
+  const sourceW=288,sourceH=216;
+  const FRAME_INTERVAL=48;
+  const ARM_TIME=1320;
+  const TAU=Math.PI*2;
+
+  let state="intro";
+  let startedAt=0;
+  let lastFrameAt=0;
+  let dpr=1;
+  let discSize=320,discRes=360,discR=160,innerR=64,outerR=168;
+  let geometry={cx:160,cy:300,deckX:0,deckY:0,deckW:320,deckH:400,pivotX:0,pivotY:0};
+  let spinStart=0;
+  let soundContext=null,soundGain=null,soundSource=null;
+  let mapIndex=null,mapFx=null,mapFy=null,mapRadius=null,mapValid=null;
+  let recordImage=null,recordPixels=null;
+  let sourceCanvas=document.createElement("canvas");
+  let sourceCtx=sourceCanvas.getContext("2d",{willReadFrequently:true});
+  let sourceLuma=new Uint8Array(sourceW*sourceH);
+  let recordCanvas=document.createElement("canvas");
+  let recordCtx=recordCanvas.getContext("2d",{willReadFrequently:true});
+  let textureReady=false;
+  let dust=[];
+  let woodLines=[];
+
+  const rand=(a,b)=>a+Math.random()*(b-a);
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  const smoothstep=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t);};
+  const easeOut=t=>1-Math.pow(1-clamp(t,0,1),3);
+
+  function roundRect(c,x,y,w,h,r) {
+    r=Math.min(r,w/2,h/2);
+    c.beginPath();c.moveTo(x+r,y);c.lineTo(x+w-r,y);c.quadraticCurveTo(x+w,y,x+w,y+r);
+    c.lineTo(x+w,y+h-r);c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    c.lineTo(x+r,y+h);c.quadraticCurveTo(x,y+h,x,y+h-r);
+    c.lineTo(x,y+r);c.quadraticCurveTo(x,y,x+r,y);c.closePath();
+  }
+
+  function resize() {
+    const W=Math.max(1,window.innerWidth),H=Math.max(1,window.innerHeight);
+    dpr=Math.min(window.devicePixelRatio||1,1.35);
+    canvas.width=Math.round(W*dpr);canvas.height=Math.round(H*dpr);
+    canvas.style.width=W+"px";canvas.style.height=H+"px";
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+
+    discSize=Math.max(210,Math.min(W*.84,H*.68));
+    const deckW=Math.min(W*.94,discSize*1.42);
+    const deckH=Math.min(H*.73,discSize*1.40);
+    const deckX=(W-deckW)/2,deckY=(H-deckH)/2;
+    const cx=deckX+deckW*.475,cy=deckY+deckH*.5;
+    geometry={cx,cy,deckX,deckY,deckW,deckH,pivotX:deckX+deckW*.88,pivotY:deckY+deckH*.25};
+
+    discRes=Math.round(clamp(discSize*dpr,300,470));
+    discR=discRes*.48;
+    outerR=discR*.955;
+    innerR=discR*.225;
+    sourceCanvas.width=sourceW;sourceCanvas.height=sourceH;
+    recordCanvas.width=recordCanvas.height=discRes;
+    sourceLuma=new Uint8Array(sourceW*sourceH);
+    recordImage=recordCtx.createImageData(discRes,discRes);
+    recordPixels=recordImage.data;
+    mapIndex=new Uint32Array(discRes*discRes);
+    mapFx=new Float32Array(discRes*discRes);
+    mapFy=new Float32Array(discRes*discRes);
+    mapRadius=new Float32Array(discRes*discRes);
+    mapValid=new Uint8Array(discRes*discRes);
+    const mid=(discRes-1)/2,range=outerR-innerR;
+    for(let y=0;y<discRes;y++) for(let x=0;x<discRes;x++) {
+      const i=y*discRes+x,dx=x-mid,dy=y-mid;
+      const r=Math.sqrt(dx*dx+dy*dy);
+      mapRadius[i]=r;
+      if(r<innerR+1||r>outerR-1) continue;
+      let angle=Math.atan2(dy,dx);
+      // Put the left/right seam at 12 o'clock: the picture wraps around the record.
+      let wrapped=(angle/TAU+.25)%1;
+      if(wrapped<0) wrapped+=1;
+      const sx=wrapped*(sourceW-1);
+      const sy=clamp((outerR-r)/range,0,1)*(sourceH-1);
+      const x0=Math.floor(sx),y0=Math.floor(sy);
+      mapIndex[i]=y0*sourceW+x0;
+      mapFx[i]=sx-x0;mapFy[i]=sy-y0;mapValid[i]=1;
+    }
+    dust=[];woodLines=[];
+    for(let i=0;i<45;i++) dust.push({x:Math.random(),y:Math.random(),r:rand(.3,1.1),phase:rand(0,TAU),speed:rand(.1,.5)});
+    for(let i=0;i<24;i++) woodLines.push({y:Math.random(),bend:rand(-10,10),alpha:rand(.025,.075),width:rand(.4,1.2)});
+    textureReady=false;
+  }
+
+  function drawRoom(now) {
+    const W=window.innerWidth,H=window.innerHeight;
+    const wall=ctx.createLinearGradient(0,0,W,H);
+    wall.addColorStop(0,"#514036");wall.addColorStop(.43,"#342820");wall.addColorStop(1,"#1b1511");
+    ctx.fillStyle=wall;ctx.fillRect(0,0,W,H);
+    for(const line of woodLines) {
+      const y=line.y*H;
+      ctx.globalAlpha=line.alpha;ctx.strokeStyle="#d5b388";ctx.lineWidth=line.width;
+      ctx.beginPath();ctx.moveTo(0,y);ctx.bezierCurveTo(W*.3,y+line.bend,W*.72,y-line.bend,W,y+line.bend*.4);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    const light=ctx.createRadialGradient(W*.45,H*.4,10,W*.45,H*.4,Math.max(W,H)*.8);
+    light.addColorStop(0,"rgba(214,170,107,.11)");light.addColorStop(1,"rgba(0,0,0,.45)");
+    ctx.fillStyle=light;ctx.fillRect(0,0,W,H);
+    for(const p of dust) {
+      const x=((p.x*W+Math.sin(now*.00025+p.phase)*9)%W+W)%W;
+      const y=((p.y*H+now*.009*p.speed)%H+H)%H;
+      ctx.globalAlpha=.09+.07*(.5+.5*Math.sin(now*.001+p.phase));
+      ctx.fillStyle="#f4d7a0";ctx.beginPath();ctx.arc(x,y,p.r,0,TAU);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function drawDeck() {
+    const g=geometry,{deckX:x,deckY:y,deckW:w,deckH:h}=g;
+    ctx.save();ctx.shadowColor="rgba(0,0,0,.6)";ctx.shadowBlur=25;ctx.shadowOffsetY=12;
+    roundRect(ctx,x,y,w,h,Math.max(8,discSize*.035));
+    const body=ctx.createLinearGradient(x,y,x+w,y+h);
+    body.addColorStop(0,"#986b45");body.addColorStop(.22,"#62432e");body.addColorStop(.54,"#3f2d23");body.addColorStop(.82,"#765039");body.addColorStop(1,"#2b211b");
+    ctx.fillStyle=body;ctx.fill();ctx.restore();
+
+    roundRect(ctx,x+2,y+2,w-4,h-4,Math.max(7,discSize*.03));
+    ctx.strokeStyle="#bd9766";ctx.lineWidth=1.2;ctx.stroke();
+    roundRect(ctx,x+7,y+7,w-14,h-14,Math.max(6,discSize*.025));
+    ctx.strokeStyle="rgba(239,207,155,.27)";ctx.lineWidth=.7;ctx.stroke();
+
+    // Subtle walnut grain, rubbed into the lacquer.
+    for(let i=0;i<28;i++) {
+      const yy=y+10+(h-20)*i/28;
+      ctx.globalAlpha=.035+(i%3)*.015;ctx.strokeStyle=i%2?"#f2d2a0":"#100b08";
+      ctx.lineWidth=.6;ctx.beginPath();ctx.moveTo(x+8,yy);
+      ctx.bezierCurveTo(x+w*.3,yy+Math.sin(i)*3,x+w*.7,yy-Math.cos(i)*4,x+w-8,yy+Math.sin(i*.4)*2);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+
+    // Three tactile controls and a small speed selector on the plinth.
+    const buttonY=y+h*.83,buttonX=x+w*.16;
+    for(let i=0;i<3;i++) {
+      ctx.beginPath();ctx.arc(buttonX+i*discSize*.105,buttonY,discSize*.022,0,TAU);
+      ctx.fillStyle=i===0&&state!=="intro"?"#bc5140":"#251b15";ctx.fill();
+      ctx.strokeStyle="#b99869";ctx.lineWidth=1;ctx.stroke();
+      ctx.beginPath();ctx.arc(buttonX+i*discSize*.105,buttonY,discSize*.012,0,TAU);
+      ctx.strokeStyle="#58402b";ctx.stroke();
+    }
+    ctx.fillStyle="#e0c49a";ctx.font=Math.max(7,discSize*.023)+"px Georgia,serif";ctx.textAlign="left";ctx.textBaseline="middle";
+    ctx.fillText("33⅓",buttonX+discSize*.36,buttonY);
+    ctx.fillStyle="#b58c5f";ctx.font=Math.max(6,discSize*.017)+"px Georgia,serif";
+    ctx.fillText("RPM",buttonX+discSize*.36,buttonY+discSize*.023);
+    ctx.strokeStyle="#c4a06d";ctx.lineWidth=.65;
+    ctx.beginPath();ctx.moveTo(x+w*.08,y+h*.73);ctx.lineTo(x+w*.92,y+h*.73);ctx.stroke();
+  }
+
+  function drawDiscSurface(now,angle) {
+    const {cx,cy}=geometry,R=discSize*.48;
+    // The physical record always exists beneath the transforming groove image.
+    ctx.save();ctx.shadowColor="rgba(0,0,0,.62)";ctx.shadowBlur=14;ctx.shadowOffsetY=7;
+    ctx.beginPath();ctx.arc(cx,cy,R,0,TAU);
+    const vinyl=ctx.createRadialGradient(cx-R*.16,cy-R*.22,R*.04,cx,cy,R);
+    vinyl.addColorStop(0,"#33302a");vinyl.addColorStop(.38,"#171715");vinyl.addColorStop(.82,"#0c0c0b");vinyl.addColorStop(1,"#29251f");
+    ctx.fillStyle=vinyl;ctx.fill();ctx.restore();
+
+    ctx.save();ctx.translate(cx,cy);ctx.rotate(angle);
+    // Analog grooves, cut as continuous circles — never square video tiles.
+    for(let i=0;i<125;i++) {
+      const r=R*.43+(R*.51)*i/124;
+      ctx.globalAlpha=.035+(i%7===0?.045:0);
+      ctx.strokeStyle=i%5===0?"#b3a48a":"#b7b3a5";
+      ctx.lineWidth=i%9===0?.9:.45;
+      ctx.beginPath();ctx.arc(0,0,r,0,TAU);ctx.stroke();
+    }
+    for(let i=0;i<72;i++) {
+      const a=i*TAU/72;
+      const r0=R*.885,r1=R*.92;
+      ctx.globalAlpha=.17;ctx.strokeStyle="#b9a78a";ctx.lineWidth=.65;
+      ctx.beginPath();ctx.moveTo(Math.cos(a)*r0,Math.sin(a)*r0);ctx.lineTo(Math.cos(a)*r1,Math.sin(a)*r1);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    if(textureReady&&state!=="intro") {
+      const revealed=state==="opening"?clamp((now-startedAt)/ARM_TIME,0,1):1;
+      updateRevealAlpha(revealed);
+      recordCtx.putImageData(recordImage,0,0);
+      ctx.drawImage(recordCanvas,-R,-R,R*2,R*2);
+    }
+
+    // Center label rotates with the record, giving the unwrapped image a physical home.
+    const lr=R*.225;
+    const label=ctx.createRadialGradient(-lr*.28,-lr*.31,2,0,0,lr);
+    label.addColorStop(0,"#e7d4aa");label.addColorStop(.7,"#b99762");label.addColorStop(1,"#68452f");
+    ctx.beginPath();ctx.arc(0,0,lr,0,TAU);ctx.fillStyle=label;ctx.fill();
+    ctx.lineWidth=1.3;ctx.strokeStyle="#e0bf7d";ctx.stroke();
+    ctx.beginPath();ctx.arc(0,0,lr*.87,0,TAU);ctx.strokeStyle="#7b5234";ctx.lineWidth=.55;ctx.stroke();
+
+    ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="#513324";ctx.font="italic bold "+Math.max(10,lr*.27)+"px Georgia,serif";
+    ctx.fillText("BAD APPLE",0,-lr*.15);
+    ctx.font=Math.max(6,lr*.13)+"px Georgia,serif";ctx.fillStyle="#70482e";
+    ctx.fillText("SIDE A  •  33⅓ RPM",0,lr*.26);
+    ctx.strokeStyle="#895d3b";ctx.lineWidth=.5;
+    ctx.beginPath();ctx.moveTo(-lr*.48,lr*.46);ctx.lineTo(lr*.48,lr*.46);ctx.stroke();
+    ctx.beginPath();ctx.arc(0,0,3,0,TAU);ctx.fillStyle="#2b2119";ctx.fill();
+    ctx.restore();
+
+    // The spindle stays still while the disc moves.
+    ctx.beginPath();ctx.arc(cx,cy,3.1,0,TAU);ctx.fillStyle="#d1b17a";ctx.fill();
+    ctx.beginPath();ctx.arc(cx,cy,1.3,0,TAU);ctx.fillStyle="#423126";ctx.fill();
+  }
+
+  function updateRevealAlpha(progress) {
+    const revealRadius=outerR-progress*(outerR-innerR);
+    const alpha=recordImage.data;
+    for(let i=0;i<mapValid.length;i++) {
+      const p=i*4+3;
+      alpha[p]=mapValid[i]&&mapRadius[i]>=revealRadius?255:0;
+    }
+  }
+
+  function prepareGrooveTexture(now) {
+    if(video.readyState<2||!video.videoWidth||!video.videoHeight||!recordImage) return;
+    if(now-lastFrameAt<FRAME_INTERVAL) return;
+    lastFrameAt=now;
+    try {
+      sourceCtx.drawImage(video,0,0,sourceW,sourceH);
+      const src=sourceCtx.getImageData(0,0,sourceW,sourceH).data;
+      for(let i=0,p=0;i<sourceLuma.length;i++,p+=4)
+        sourceLuma[i]=Math.round(src[p]*.2126+src[p+1]*.7152+src[p+2]*.0722);
+
+      const data=recordImage.data;
+      const res=discRes;
+      for(let i=0;i<mapValid.length;i++) {
+        const p=i*4;
+        if(!mapValid[i]) {
+          data[p]=data[p+1]=data[p+2]=0;data[p+3]=0;continue;
+        }
+        const base=mapIndex[i],x0=base%sourceW,y0=(base-x0)/sourceW;
+        const x1=Math.min(sourceW-1,x0+1),y1=Math.min(sourceH-1,y0+1);
+        const fx=mapFx[i],fy=mapFy[i];
+        const a=sourceLuma[y0*sourceW+x0],b=sourceLuma[y0*sourceW+x1];
+        const c=sourceLuma[y1*sourceW+x0],d=sourceLuma[y1*sourceW+x1];
+        const top=a+(b-a)*fx,bot=c+(d-c)*fx;
+        const light=smoothstep(30,172,top+(bot-top)*fy);
+        const r=mapRadius[i];
+        // Every source row becomes a circular groove; its tone and highlight are engraved into the record.
+        const groove=.48+.52*Math.pow(.5+.5*Math.cos(r*3.85),2.2);
+        const glint=.5+.5*Math.cos(r*1.9+Math.sin(r*.07)*.8);
+        const value=light*groove;
+        data[p]=clamp(8+value*(215+glint*17),0,255);
+        data[p+1]=clamp(7+value*(183+glint*14),0,255);
+        data[p+2]=clamp(6+value*(138+glint*11),0,255);
+        data[p+3]=255;
+      }
+      textureReady=true;
+    } catch(err) {
+      console.warn("Could not read the current video frame.",err);
+    }
+  }
+
+  function drawToneArm(now) {
+    const g=geometry;
+    const {cx,cy,pivotX:ax,pivotY:ay}=g;
+    const R=discSize*.48;
+    const progress=state==="intro"?0:easeOut((now-startedAt)/ARM_TIME);
+    const endStart={x:cx+R*.98,y:cy-R*.12};
+    const endFinal={x:cx+R*.55,y:cy-R*.43};
+    const ex=endStart.x+(endFinal.x-endStart.x)*progress;
+    const ey=endStart.y+(endFinal.y-endStart.y)*progress;
+
+    // Pivot mount and counterweight.
+    ctx.beginPath();ctx.arc(ax,ay,discSize*.065,0,TAU);
+    const chrome=ctx.createLinearGradient(ax-discSize*.05,ay,ax+discSize*.05,ay);
+    chrome.addColorStop(0,"#46372a");chrome.addColorStop(.28,"#dfc596");chrome.addColorStop(.5,"#73583b");chrome.addColorStop(.8,"#d7ba84");chrome.addColorStop(1,"#403127");
+    ctx.fillStyle=chrome;ctx.fill();ctx.strokeStyle="#38271c";ctx.lineWidth=1.2;ctx.stroke();
+    ctx.beginPath();ctx.arc(ax,ay,discSize*.025,0,TAU);ctx.fillStyle="#aa8c5e";ctx.fill();
+    ctx.beginPath();ctx.arc(ax,ay,discSize*.012,0,TAU);ctx.fillStyle="#37271c";ctx.fill();
+
+    const midx=(ax+ex)/2+discSize*.03,midy=(ay+ey)/2-discSize*.025;
+    ctx.beginPath();ctx.moveTo(ax,ay);ctx.quadraticCurveTo(midx,midy,ex,ey);
+    ctx.lineCap="round";ctx.strokeStyle="#1a1713";ctx.lineWidth=discSize*.032;ctx.stroke();
+    ctx.beginPath();ctx.moveTo(ax,ay-discSize*.006);ctx.quadraticCurveTo(midx,midy-discSize*.01,ex,ey-discSize*.004);
+    ctx.strokeStyle="#c6ad7c";ctx.lineWidth=discSize*.009;ctx.stroke();
+
+    ctx.save();ctx.translate(ex,ey);ctx.rotate(Math.atan2(ey-ay,ex-ax));
+    roundRect(ctx,-discSize*.025,-discSize*.045,discSize*.08,discSize*.06,discSize*.012);
+    ctx.fillStyle="#bba074";ctx.fill();ctx.strokeStyle="#423126";ctx.lineWidth=.8;ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-discSize*.005,discSize*.015);ctx.lineTo(-discSize*.02,discSize*.05);
+    ctx.strokeStyle="#c9c0ae";ctx.lineWidth=1.2;ctx.stroke();
+    ctx.fillStyle="#17130f";ctx.beginPath();ctx.arc(-discSize*.02,discSize*.05,1.5,0,TAU);ctx.fill();
+    ctx.restore();
+  }
+
+  function drawIntro(now) {
+    drawRoom(now);
+    drawDeck();
+    drawDiscSurface(now,0);
+    drawToneArm(now);
+    const W=window.innerWidth,H=window.innerHeight;
+    ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="#e5d1ac";ctx.font="italic "+clamp(W*.048,18,27)+"px Georgia,serif";
+    ctx.fillText("A record that plays a picture",W/2,Math.max(27,geometry.deckY-30));
+    ctx.fillStyle="#bda07a";ctx.font="9px Georgia,serif";
+    ctx.fillText("33⅓ RPM     •     SIDE A",W/2,Math.min(H-24,geometry.deckY+geometry.deckH+22));
+    ctx.fillStyle="#f0d9b0";ctx.font="italic 12px Georgia,serif";
+    ctx.fillText("Touch to lower the needle",W/2,Math.min(H-45,geometry.deckY+geometry.deckH+44));
+  }
+
+  function drawPlaying(now) {
+    drawRoom(now);
+    drawDeck();
+    const elapsed=(now-startedAt)/1000;
+    const opening=state==="opening";
+    const turn=opening?easeOut((now-startedAt)/ARM_TIME)*TAU*1.15:TAU*1.15+elapsed*.105;
+    drawDiscSurface(now,turn);
+    drawToneArm(now);
+    const W=window.innerWidth;
+    ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="rgba(228,204,166,.78)";
+    ctx.font="9px Georgia,serif";
+    ctx.fillText(opening?"THE GROOVES ARE WAKING UP":"BAD APPLE   /   SIDE A",W/2,Math.min(window.innerHeight-16,geometry.deckY+geometry.deckH+22));
+    if(opening&&now-startedAt>=ARM_TIME) state="playing";
+  }
+
+  function beginPlayback() {
+    if(state!=="intro") {
+      if(video.paused) video.play().catch(()=>{});
+      return;
+    }
+    state="opening";
+    startedAt=performance.now();
+    lastFrameAt=0;
+    try {
+      const AudioCtx=window.AudioContext||window.webkitAudioContext;
+      if(AudioCtx) {
+        soundContext=new AudioCtx();
+        soundGain=soundContext.createGain();
+        soundGain.gain.value=0;
+        soundSource=soundContext.createMediaElementSource(video);
+        soundSource.connect(soundGain);soundGain.connect(soundContext.destination);
+        soundContext.resume().catch(()=>{});
+      }
+    } catch(_) {
+      soundContext=null;soundGain=null;soundSource=null;
+    }
+    video.muted=false;video.volume=1;
+    const play=video.play();
+    if(play&&play.catch) play.catch(()=>{});
+    if(soundContext&&soundGain) {
+      soundGain.gain.setTargetAtTime(1,soundContext.currentTime+.48,.23);
+    }
+  }
+
+  function tick(now) {
+    if(state==="intro") {
+      drawIntro(now);
+    } else {
+      prepareGrooveTexture(now);
+      drawPlaying(now);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  video.addEventListener("loadedmetadata",()=>{
+    if(video.videoWidth&&video.videoHeight) {
+      // Aspect is intentionally wrapped around a record; the original rectangle is not displayed.
+    }
+  });
+  video.addEventListener("error",()=>{errorBox.style.display="block";});
+  document.addEventListener("pointerdown",beginPlayback,{passive:true});
+  window.addEventListener("resize",resize);
+  resize();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
