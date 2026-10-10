@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#efe2c4">
+<title>Bad Apple — Living Engraving</title>
+<style>
+  * { box-sizing:border-box; }
+  html,body { width:100%;height:100%;margin:0;overflow:hidden;background:#efe2c4; }
+  body { position:fixed;inset:0;touch-action:manipulation;user-select:none;-webkit-user-select:none; }
+  #art { display:block;width:100%;height:100%; }
+  #video { position:fixed;width:1px;height:1px;left:-20px;top:-20px;opacity:0;pointer-events:none; }
+  #error { display:none;position:fixed;left:14px;right:14px;bottom:14px;padding:10px 12px;
+    color:#f5e8cf;background:#39241a;border:1px solid #8d6745;
+    font:12px/1.5 Georgia,serif;text-align:center; }
+</style>
+</head>
+<body>
+<canvas id="art" aria-label="Bad Apple als lebendige Tuschegravur mit handgezeichneten Schraffuren"></canvas>
+<video id="video" playsinline preload="auto" loop src="bad_apple.mp4"></video>
+<div id="error">„bad_apple.mp4“ konnte nicht geladen werden. Die Datei muss neben dieser HTML-Datei liegen.</div>
+<script>
+(() => {
+  "use strict";
+  const canvas = document.getElementById("art");
+  const ctx = canvas.getContext("2d", {alpha:false, desynchronized:true});
+  const video = document.getElementById("video");
+  const errorBox = document.getElementById("error");
+
+  const PAPER = "#efe2c4";
+  const INK = "#241912";
+  const RED_INK = "#823c2d";
+  const FRAME_RATE_MS = 48;
+  const OPEN_MS = 1250;
+
+  let state = "intro";
+  let startedAt = 0;
+  let lastSampleAt = 0;
+  let dpr = 1;
+  let videoAspect = 4/3;
+  let screen = {x:0,y:0,w:1,h:1};
+  let frame = {x:0,y:0,w:1,h:1};
+  let sw = 320, sh = 240;
+  let sampleCanvas = document.createElement("canvas");
+  let sampleCtx = sampleCanvas.getContext("2d", {willReadFrequently:true});
+  let maskCanvas = document.createElement("canvas");
+  let maskCtx = maskCanvas.getContext("2d", {willReadFrequently:true});
+  let toneCanvas = document.createElement("canvas");
+  let toneCtx = toneCanvas.getContext("2d", {willReadFrequently:true});
+  let hatchCanvas = document.createElement("canvas");
+  let hatchCtx = hatchCanvas.getContext("2d");
+  let crossCanvas = document.createElement("canvas");
+  let crossCtx = crossCanvas.getContext("2d");
+  let edgeCanvas = document.createElement("canvas");
+  let edgeCtx = edgeCanvas.getContext("2d", {willReadFrequently:true});
+  let maskImage = null, toneImage = null, edgeImage = null;
+  let lum = new Uint8Array(0);
+  let paperFibers = [];
+  let dust = [];
+  let audioContext = null, audioGain = null, audioSource = null;
+
+  const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+  const rand = (a,b) => a + Math.random()*(b-a);
+  const smooth = t => { t=clamp(t,0,1); return t*t*(3-2*t); };
+  const smoothRange = (v,a,b) => smooth((v-a)/(b-a));
+  const fract = x => x-Math.floor(x);
+
+  function roundedRect(c,x,y,w,h,r) {
+    r=Math.max(0,Math.min(r,w/2,h/2));
+    c.beginPath();
+    c.moveTo(x+r,y);c.lineTo(x+w-r,y);c.quadraticCurveTo(x+w,y,x+w,y+r);
+    c.lineTo(x+w,y+h-r);c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    c.lineTo(x+r,y+h);c.quadraticCurveTo(x,y+h,x,y+h-r);
+    c.lineTo(x,y+r);c.quadraticCurveTo(x,y,x+r,y);c.closePath();
+  }
+
+  function makePaperTexture() {
+    paperFibers=[];
+    dust=[];
+    for(let i=0;i<460;i++) paperFibers.push({
+      x:Math.random(),y:Math.random(),length:rand(.002,.025),
+      bend:rand(-2,2),alpha:rand(.035,.16),dark:Math.random()<.62
+    });
+    for(let i=0;i<34;i++) dust.push({
+      x:Math.random(),y:Math.random(),r:rand(.45,1.25),phase:rand(0,6.28),speed:rand(.15,.48)
+    });
+  }
+
+  function layout() {
+    const W=window.innerWidth,H=window.innerHeight;
+    const maxW=W*.93,maxH=H*.69;
+    const aspect=videoAspect||4/3;
+    let swidth=maxW,sheight=swidth/aspect;
+    if(sheight>maxH){sheight=maxH;swidth=sheight*aspect;}
+    const cx=W/2,cy=H*.515;
+    screen={x:cx-swidth/2,y:cy-sheight/2,w:swidth,h:sheight};
+    const margin=clamp(Math.min(W,H)*.035,9,24);
+    frame={x:screen.x-margin,y:screen.y-margin,w:screen.w+margin*2,h:screen.h+margin*2};
+  }
+
+  function buildPattern(target, targetCtx, spacing, slope, baseAlpha, widthBase) {
+    const W=sw,H=sh;
+    targetCtx.clearRect(0,0,W,H);
+    targetCtx.lineCap="round";
+    targetCtx.lineJoin="round";
+    const reach=H+W;
+    for(let offset=-reach;offset<W+reach;offset+=spacing) {
+      const variation=fract(Math.sin(offset*12.9898+spacing*78.233)*43758.5453);
+      targetCtx.beginPath();
+      let first=true;
+      for(let y=-12;y<H+12;y+=10) {
+        const x=offset+slope*y+Math.sin(y*.031+offset*.043)*1.15+Math.sin(y*.009-offset*.021)*.7;
+        if(first){targetCtx.moveTo(x,y);first=false;} else targetCtx.lineTo(x,y);
+      }
+      targetCtx.globalAlpha=baseAlpha*(.68+variation*.32);
+      targetCtx.strokeStyle=variation>.86?"#634633":INK;
+      targetCtx.lineWidth=widthBase*(.7+variation*.55);
+      targetCtx.stroke();
+    }
+    targetCtx.globalAlpha=1;
+  }
+
+  function resize() {
+    const W=Math.max(1,window.innerWidth),H=Math.max(1,window.innerHeight);
+    dpr=Math.min(window.devicePixelRatio||1,1.55);
+    canvas.width=Math.round(W*dpr);
+    canvas.height=Math.round(H*dpr);
+    canvas.style.width=W+"px";
+    canvas.style.height=H+"px";
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    layout();
+
+    const nextW=clamp(Math.round(screen.w*.82),240,540);
+    const nextH=Math.max(120,Math.round(nextW/videoAspect));
+    const changed=nextW!==sw||nextH!==sh||!maskImage;
+    sw=nextW;sh=nextH;
+    for(const c of [sampleCanvas,maskCanvas,toneCanvas,hatchCanvas,crossCanvas,edgeCanvas]) {
+      c.width=sw;c.height=sh;
+    }
+    if(changed) {
+      maskImage=maskCtx.createImageData(sw,sh);
+      toneImage=toneCtx.createImageData(sw,sh);
+      edgeImage=edgeCtx.createImageData(sw,sh);
+      lum=new Uint8Array(sw*sh);
+      buildPattern(hatchCanvas,hatchCtx,3.8,.78,.92,.72);
+      buildPattern(crossCanvas,crossCtx,7.5,-.82,.42,.58);
+    }
+    makePaperTexture();
+  }
+
+  function drawPaper(now) {
+    const W=window.innerWidth,H=window.innerHeight;
+    const paper=ctx.createLinearGradient(0,0,W,H);
+    paper.addColorStop(0,"#f5e9cf");paper.addColorStop(.52,PAPER);paper.addColorStop(1,"#e3d0ac");
+    ctx.fillStyle=paper;ctx.fillRect(0,0,W,H);
+
+    ctx.save();
+    for(const f of paperFibers) {
+      const x=f.x*W,y=f.y*H;
+      ctx.globalAlpha=f.alpha;
+      ctx.strokeStyle=f.dark?"#9d7b52":"#fff8df";
+      ctx.lineWidth=f.dark?.65:.9;
+      ctx.beginPath();ctx.moveTo(x,y);
+      ctx.quadraticCurveTo(x+f.length*W*.5,y+f.bend,x+f.length*W,y+f.bend*.25);
+      ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    const vignette=ctx.createRadialGradient(W*.5,H*.5,Math.min(W,H)*.12,W*.5,H*.5,Math.max(W,H)*.76);
+    vignette.addColorStop(0,"rgba(255,255,235,0)");
+    vignette.addColorStop(1,"rgba(83,48,23,.14)");
+    ctx.fillStyle=vignette;ctx.fillRect(0,0,W,H);
+    for(const p of dust) {
+      ctx.globalAlpha=.05+.055*(.5+.5*Math.sin(now*.001*p.speed+p.phase));
+      ctx.fillStyle="#6e4a2a";
+      ctx.beginPath();ctx.arc(p.x*W,p.y*H,p.r,0,Math.PI*2);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    ctx.restore();
+
+    // A restrained engraved page border, like an old print pulled from a copper plate.
+    const margin=clamp(Math.min(W,H)*.025,8,18);
+    ctx.strokeStyle="rgba(79,48,29,.62)";ctx.lineWidth=.8;
+    ctx.strokeRect(margin,margin,W-margin*2,H-margin*2);
+    ctx.strokeStyle="rgba(139,86,49,.56)";ctx.lineWidth=.55;
+    ctx.strokeRect(margin+4,margin+4,W-margin*2-8,H-margin*2-8);
+    const corner=clamp(Math.min(W,H)*.025,8,22);
+    for(const x of [margin+10,W-margin-10]) for(const y of [margin+10,H-margin-10]) {
+      const dx=x<W/2?1:-1,dy=y<H/2?1:-1;
+      ctx.beginPath();ctx.moveTo(x,y+dy*corner);ctx.quadraticCurveTo(x,y,x+dx*corner,y);ctx.stroke();
+      ctx.beginPath();ctx.arc(x+dx*corner*.42,y+dy*corner*.42,2.0,0,Math.PI*2);ctx.stroke();
+    }
+  }
+
+  function drawPageHeader() {
+    const W=window.innerWidth,H=window.innerHeight;
+    ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="#543522";
+    ctx.font="italic "+clamp(W*.034,12,18)+"px Georgia,serif";
+    ctx.fillText("Bad Apple",W/2,Math.max(22,frame.y-15));
+    ctx.font="8px Georgia,serif";
+    ctx.fillStyle="#866848";
+    ctx.fillText("L I V I N G   E N G R A V I N G",W/2,Math.min(H-14,frame.y+frame.h+15));
+
+    ctx.strokeStyle="rgba(97,65,39,.5)";ctx.lineWidth=.65;
+    const lineY=frame.y+frame.h+15;
+    ctx.beginPath();ctx.moveTo(W*.18,lineY);ctx.lineTo(W*.36,lineY);
+    ctx.moveTo(W*.64,lineY);ctx.lineTo(W*.82,lineY);ctx.stroke();
+  }
+
+  function drawImageFrame() {
+    ctx.save();
+    ctx.shadowColor="rgba(69,41,22,.22)";ctx.shadowBlur=10;ctx.shadowOffsetY=4;
+    ctx.fillStyle="#c0a27a";ctx.fillRect(frame.x-2,frame.y-2,frame.w+4,frame.h+4);
+    ctx.restore();
+    ctx.fillStyle="#f7edda";ctx.fillRect(frame.x,frame.y,frame.w,frame.h);
+    ctx.strokeStyle="#7d5737";ctx.lineWidth=1;ctx.strokeRect(frame.x,frame.y,frame.w,frame.h);
+    ctx.strokeStyle="#c2a378";ctx.lineWidth=.55;ctx.strokeRect(frame.x+3,frame.y+3,frame.w-6,frame.h-6);
+  }
+
+  function drawAppleSeal(cx,cy,r,now) {
+    ctx.save();ctx.translate(cx,cy);
+    ctx.strokeStyle="#70482e";ctx.lineWidth=1.4;
+    ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.stroke();
+    ctx.beginPath();ctx.arc(0,0,r-5,0,Math.PI*2);ctx.stroke();
+    for(let i=0;i<36;i++) {
+      const a=i*Math.PI*2/36;
+      const len=i%3===0?6:3;
+      ctx.beginPath();ctx.moveTo(Math.cos(a)*(r-8),Math.sin(a)*(r-8));
+      ctx.lineTo(Math.cos(a)*(r-8-len),Math.sin(a)*(r-8-len));ctx.stroke();
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(0,-r*.12);
+    ctx.bezierCurveTo(-r*.12,-r*.48,-r*.53,-r*.42,-r*.55,-r*.08);
+    ctx.bezierCurveTo(-r*.61,r*.29,-r*.25,r*.51,-r*.06,r*.48);
+    ctx.bezierCurveTo(r*.04,r*.45,r*.09,r*.5,r*.2,r*.44);
+    ctx.bezierCurveTo(r*.49,r*.27,r*.53,-r*.11,r*.3,-r*.28);
+    ctx.bezierCurveTo(r*.19,-r*.38,r*.07,-r*.29,0,-r*.21);
+    ctx.closePath();
+    ctx.clip();
+    ctx.strokeStyle="#543522";ctx.lineWidth=.8;
+    for(let d=-r;d<r*1.2;d+=4) {
+      ctx.beginPath();ctx.moveTo(-r,d);ctx.lineTo(r,d-r*.26);ctx.stroke();
+    }
+    ctx.restore();
+    ctx.beginPath();ctx.moveTo(0,-r*.2);ctx.quadraticCurveTo(-r*.02,-r*.46,r*.15,-r*.55);
+    ctx.strokeStyle="#70482e";ctx.lineWidth=2.4;ctx.stroke();
+    ctx.fillStyle="#8b4b35";ctx.font="italic "+Math.max(9,r*.13)+"px Georgia,serif";
+    ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("B A",0,r*.72);
+    ctx.restore();
+  }
+
+  function drawIntro(now) {
+    drawPaper(now);
+    drawImageFrame();
+    const W=window.innerWidth,H=window.innerHeight;
+    const radius=clamp(Math.min(screen.w,screen.h)*.25,40,88);
+    drawAppleSeal(W/2,H*.47,radius,now);
+    ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="#593a25";
+    ctx.font="italic "+clamp(W*.055,18,28)+"px Georgia,serif";
+    ctx.fillText("An image engraved in ink",W/2,H*.47+radius+34);
+    ctx.fillStyle="#8d6b49";ctx.font="10px Georgia,serif";
+    ctx.fillText("TOUCH THE PAGE TO SET THE INK IN MOTION",W/2,Math.min(H-35,H*.47+radius+59));
+    drawPageHeader();
+  }
+
+  function buildEngraving(now) {
+    if(video.readyState<2||!video.videoWidth||!video.videoHeight) return false;
+    if(now-lastSampleAt<FRAME_RATE_MS) return false;
+    lastSampleAt=now;
+    try {
+      sampleCtx.drawImage(video,0,0,sw,sh);
+      const src=sampleCtx.getImageData(0,0,sw,sh).data;
+      const count=sw*sh;
+      for(let i=0,p=0;i<count;i++,p+=4) {
+        lum[i]=Math.round(src[p]*.2126+src[p+1]*.7152+src[p+2]*.0722);
+      }
+      const md=maskImage.data,td=toneImage.data,ed=edgeImage.data;
+      for(let y=0;y<sh;y++) {
+        for(let x=0;x<sw;x++) {
+          const i=y*sw+x,p=i*4;
+          const value=lum[i];
+          const ink=smoothRange(value,58,174);
+          md[p]=27;md[p+1]=19;md[p+2]=13;md[p+3]=Math.round(ink*255);
+          const shade=ink*clamp((205-value)/142,0,.68);
+          td[p]=td[p+1]=td[p+2]=29;td[p+3]=Math.round(shade*255);
+          const left=lum[y*sw+Math.max(0,x-1)];
+          const right=lum[y*sw+Math.min(sw-1,x+1)];
+          const up=lum[Math.max(0,y-1)*sw+x];
+          const down=lum[Math.min(sh-1,y+1)*sw+x];
+          const contrast=Math.max(Math.abs(right-left),Math.abs(down-up));
+          const edge=smoothRange(contrast,24,118)*.93;
+          ed[p]=31;ed[p+1]=20;ed[p+2]=13;ed[p+3]=Math.round(edge*255);
+        }
+      }
+      maskCtx.putImageData(maskImage,0,0);
+      toneCtx.putImageData(toneImage,0,0);
+      edgeCtx.putImageData(edgeImage,0,0);
+
+      hatchCtx.clearRect(0,0,sw,sh);
+      hatchCtx.drawImage(maskPattern(),0,0);
+      hatchCtx.globalCompositeOperation="destination-in";
+      hatchCtx.drawImage(maskCanvas,0,0);
+      hatchCtx.globalCompositeOperation="source-over";
+
+      crossCtx.clearRect(0,0,sw,sh);
+      crossCtx.drawImage(crossPattern(),0,0);
+      crossCtx.globalCompositeOperation="destination-in";
+      crossCtx.drawImage(toneCanvas,0,0);
+      crossCtx.globalCompositeOperation="source-over";
+      return true;
+    } catch(err) {
+      console.warn("Could not engrave the current video frame.",err);
+      return false;
+    }
+  }
+
+  let mainPatternCache = null;
+  let crossPatternCache = null;
+  function maskPattern(){ return mainPatternCache; }
+  function crossPattern(){ return crossPatternCache; }
+
+  function drawEngraving(reveal,now) {
+    const cx=screen.x+screen.w/2,cy=screen.y+screen.h/2;
+    ctx.save();
+    ctx.beginPath();ctx.rect(screen.x,screen.y,screen.w,screen.h);ctx.clip();
+    if(reveal<.999) {
+      const radius=Math.max(3,Math.hypot(screen.w,screen.h)*smooth(reveal));
+      ctx.beginPath();ctx.arc(cx,cy,radius,0,Math.PI*2);ctx.clip();
+    }
+    // Only the newly drawn hatching and contour ink are visible; the source video is never shown.
+    ctx.globalAlpha=.27;ctx.drawImage(crossCanvas,screen.x,screen.y,screen.w,screen.h);
+    ctx.globalAlpha=1;ctx.drawImage(hatchCanvas,screen.x,screen.y,screen.w,screen.h);
+    ctx.globalAlpha=.82;ctx.drawImage(edgeCanvas,screen.x,screen.y,screen.w,screen.h);
+    ctx.globalAlpha=1;
+    ctx.restore();
+  }
+
+  function drawScene(now,reveal=1) {
+    drawPaper(now);
+    drawImageFrame();
+    drawEngraving(reveal,now);
+    drawPageHeader();
+    // Small plate-maker's register marks at the sides, in the same ink as the engraving.
+    ctx.strokeStyle="rgba(55,35,22,.68)";ctx.lineWidth=.75;
+    const r=6;
+    for(const [x,y] of [[screen.x-r,screen.y],[screen.x+screen.w+r,screen.y],[screen.x-r,screen.y+screen.h],[screen.x+screen.w+r,screen.y+screen.h]]) {
+      ctx.beginPath();ctx.moveTo(x-r,y);ctx.lineTo(x+r,y);ctx.moveTo(x,y-r);ctx.lineTo(x,y+r);ctx.stroke();
+    }
+    if(state==="opening") {
+      const p=clamp((now-startedAt)/OPEN_MS,0,1);
+      ctx.globalAlpha=1-smooth(p);
+      drawAppleSeal(window.innerWidth/2,window.innerHeight/2,clamp(Math.min(screen.w,screen.h)*.16,30,65),now);
+      ctx.globalAlpha=1;
+    }
+  }
+
+  function begin() {
+    if(state!=="intro") {
+      if(video.paused) video.play().catch(()=>{});
+      return;
+    }
+    state="opening";
+    startedAt=performance.now();
+    lastSampleAt=0;
+    try {
+      const AudioCtx=window.AudioContext||window.webkitAudioContext;
+      if(AudioCtx) {
+        audioContext=new AudioCtx();
+        audioGain=audioContext.createGain();
+        audioGain.gain.value=0;
+        audioSource=audioContext.createMediaElementSource(video);
+        audioSource.connect(audioGain);
+        audioGain.connect(audioContext.destination);
+        audioContext.resume().catch(()=>{});
+      }
+    } catch(_) {
+      audioContext=null;audioGain=null;audioSource=null;
+    }
+    video.muted=false;video.volume=1;
+    const playPromise=video.play();
+    if(playPromise&&playPromise.catch) playPromise.catch(()=>{});
+    if(audioContext&&audioGain) {
+      audioGain.gain.setTargetAtTime(1,audioContext.currentTime+.18,.24);
+    }
+  }
+
+  function tick(now) {
+    if(state==="intro") {
+      drawIntro(now);
+    } else {
+      if(now-lastSampleAt>=FRAME_RATE_MS) buildEngraving(now);
+      const progress=state==="opening"?clamp((now-startedAt)/OPEN_MS,0,1):1;
+      drawScene(now,progress);
+      if(state==="opening"&&progress>=1) state="playing";
+    }
+    requestAnimationFrame(tick);
+  }
+
+  video.addEventListener("loadedmetadata",()=>{
+    videoAspect=video.videoWidth/video.videoHeight||4/3;
+    resize();
+  });
+  video.addEventListener("error",()=>{errorBox.style.display="block";});
+  document.addEventListener("pointerdown",begin,{passive:true});
+  window.addEventListener("resize",resize);
+
+  function boot() {
+    resize();
+    mainPatternCache=document.createElement("canvas");
+    mainPatternCache.width=sw;mainPatternCache.height=sh;
+    buildPattern(mainPatternCache,mainPatternCache.getContext("2d"),3.8,.78,.92,.72);
+    crossPatternCache=document.createElement("canvas");
+    crossPatternCache.width=sw;crossPatternCache.height=sh;
+    buildPattern(crossPatternCache,crossPatternCache.getContext("2d"),7.5,-.82,.42,.58);
+    requestAnimationFrame(tick);
+  }
+
+  // Resizing also rebuilds the two static engraving plates at the new sample resolution.
+  const oldResize=resize;
+  resize=function() {
+    oldResize();
+    if(mainPatternCache) {
+      mainPatternCache.width=sw;mainPatternCache.height=sh;
+      buildPattern(mainPatternCache,mainPatternCache.getContext("2d"),3.8,.78,.92,.72);
+    }
+    if(crossPatternCache) {
+      crossPatternCache.width=sw;crossPatternCache.height=sh;
+      buildPattern(crossPatternCache,crossPatternCache.getContext("2d"),7.5,-.82,.42,.58);
+    }
+  };
+
+  makePaperTexture();
+  boot();
+})();
+</script>
+</body>
+</html>
