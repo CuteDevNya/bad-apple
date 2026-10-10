@@ -12,7 +12,7 @@
     height: 100%;
     margin: 0;
     overflow: hidden;
-    background: #030407;
+    background: #050505;
   }
   body {
     position: fixed;
@@ -27,14 +27,14 @@
     display: grid;
     place-items: center;
     overflow: hidden;
-    background: radial-gradient(ellipse at 50% 46%, #111622 0%, #07080d 56%, #030407 100%);
+    background: #050505;
   }
   /* This frame follows the video's aspect ratio and is always centered. */
   #frame {
     position: relative;
     flex: none;
     overflow: hidden;
-    background: transparent;
+    background: #050505;
     isolation: isolate;
   }
   .piece {
@@ -102,6 +102,7 @@
     font: 12px/1.4 system-ui, sans-serif;
     text-align: center;
   }
+  html, body, #visual, #frame { background: #050505 !important; }
 </style>
 </head>
 <body>
@@ -141,9 +142,9 @@
     "i", "b", "form", "details", "menu", "main"
   ];
   const colors = [
-    "#f8f8fc", "#e6e7ee", "#c9cbd6", "#aeb2c2", "#f3b8df",
-    "#c3ceff", "#a7eddf", "#f5d6a5", "#d2bcff", "#a8dafa",
-    "#e6f2b4", "#f5a8ae", "#b5b7ff", "#9fe5ed", "#fff0f7"
+    "#ffffff", "#f3f5f7", "#dce2e8", "#b8c2ce", "#e7ff67",
+    "#caff70", "#f0ffb8", "#d6f6ef", "#a9e9dc", "#f7fbff",
+    "#d0d7e2", "#b9ffea", "#ebffc5", "#f4f4f4", "#a4c9ff"
   ];
   const textBits = [
     "BAD", "APPLE", "01", "OK", "BTN", "0x", "404", "HI", "?!", "///",
