@@ -17,15 +17,16 @@
   "use strict";
   const pages = [
     "badapple-elements.html",
-    "badapple-xp-popups.html"
+    "badapple-xp-popups.html",
+    "badapple-living-engraving.html"
   ];
-  const key = "badAppleExperienceShuffleV4";
+  const key = "badAppleExperienceShuffleV5";
   const frame = document.getElementById("page");
   let previous = "";
   try { previous = localStorage.getItem(key) || ""; } catch (_) {}
 
-  // Select randomly from the original and the XP-popup experience.
-  // Prefer a different page than last time so both designs take turns.
+  // Select randomly from the original, XP-popup, and living-engraving experiences.
+  // Prefer a different page than last time so the experiences take turns.
   let choices = pages.filter(path => path !== previous);
   if (!choices.length) choices = pages;
   let index;
