@@ -280,7 +280,7 @@
     const modes=["full","tiny","micro","microTiny"];
     for(const mode of modes) {
       popupTextures[mode]=[];
-      for(let i=0;i<12;i++) popupTextures[mode].push(createPopupTexture(i,mode));
+      for(let i=0;i<16;i++) popupTextures[mode].push(createPopupTexture(i,mode));
     }
   }
 
@@ -294,16 +294,42 @@
     playbackCtx.setTransform(canvasScale,0,0,canvasScale,0,0);
   }
 
+  function drawPopupTexture(rect,index,alpha) {
+    const mode=rect.h<26?(rect.w<52?"microTiny":"micro"):(rect.w<52?"tiny":"full");
+    const variants=popupTextures[mode];
+    playbackCtx.globalAlpha=alpha===undefined?1:alpha;
+    playbackCtx.drawImage(variants[index%variants.length],rect.x,rect.y,Math.max(0.1,rect.w),Math.max(0.1,rect.h));
+  }
+
+  function drawPopupBurst(now) {
+    const W=window.innerWidth,H=window.innerHeight;
+    playbackCtx.clearRect(0,0,W,H);
+    for(const item of burstWindows) {
+      if(now<item.showAt) continue;
+      const alpha=clamp((now-item.showAt)/POPUP_FADE_MS,0,1);
+      drawPopupTexture(item,item.index,alpha);
+    }
+    playbackCtx.globalAlpha=1;
+  }
+
+  function drawPopupCollapse(now) {
+    const W=window.innerWidth,H=window.innerHeight;
+    playbackCtx.clearRect(0,0,W,H);
+    const progress=clamp((now-morphStartTime)/MORPH_MS,0,1);
+    const eased=1-Math.pow(1-progress,3);
+    for(const item of burstWindows) {
+      if(now<item.showAt+POPUP_FADE_MS) continue;
+      const h=item.h*(1-eased);
+      drawPopupTexture({x:item.x,y:item.y+(item.h-h)/2,w:item.w,h},item.index,1);
+    }
+    playbackCtx.globalAlpha=1;
+  }
+
   function drawPlaybackTiles(tiles) {
     const W=window.innerWidth,H=window.innerHeight;
     playbackCtx.clearRect(0,0,W,H);
-    for(let i=0;i<tiles.length;i++) {
-      const r=tiles[i];
-      const mode=r.h<26?(r.w<52?"microTiny":"micro"):(r.w<52?"tiny":"full");
-      const variants=popupTextures[mode];
-      const texture=variants[i%variants.length];
-      playbackCtx.drawImage(texture,r.x,r.y,Math.max(1,r.w),Math.max(1,r.h));
-    }
+    for(let i=0;i<tiles.length;i++) drawPopupTexture(tiles[i],i,1);
+    playbackCtx.globalAlpha=1;
   }
 
   let state = "intro";
@@ -312,6 +338,8 @@
   let firstFrameRgba = null;
   let firstTiles = null;
   let windows = [];
+  let burstWindows = [];
+  let morphStartTime = 0;
   let audioContext = null, audioGain = null, audioSource = null;
   let playbackPrimed = false;
   let layoutBusy = false;
@@ -419,34 +447,24 @@
   function makePopupBurst() {
     layer.classList.remove("morph","playing");
     layer.classList.add("burst");
-    const W = window.innerWidth, H = window.innerHeight;
-    const frag = document.createDocumentFragment();
-    windows = [];
+    resizePlaybackCanvas();
+    playbackCanvas.style.display="block";
+    const W=window.innerWidth,H=window.innerHeight;
+    const startedAt=performance.now();
+    burstWindows=[];
+    windows=[];
+    // Draw cached popup images on a single canvas rather than creating thousands of DOM elements.
     for(let i=0;i<MAX_WINDOWS;i++) {
-      const win = createXpWindow(i);
-      const w = rand(105,Math.min(310,Math.max(130,W*0.45)));
-      const h = rand(54,Math.min(150,Math.max(78,H*0.28)));
-      const x = rand(-w*0.08,Math.max(0,W-w*0.92));
-      const y = rand(-h*0.08,Math.max(0,H-h*0.92));
-      styleWindowForRect(win,x,y,w,h);
-      win.style.transition = "none";
-      win.style.opacity = "0";
-      frag.appendChild(win);
-      windows.push(win);
-    }
-    layer.appendChild(frag);
-    // Commit all scattered positions, then reveal the errors one by one like popup spam.
-    void layer.offsetWidth;
-    requestAnimationFrame(() => {
-      windows.forEach((win,index) => {
-        window.setTimeout(() => {
-          if(state !== "burst") return;
-          win.style.transition = "opacity " + POPUP_FADE_MS + "ms ease";
-          win.style.opacity = "1";
-        }, index * POPUP_STAGGER_MS);
+      const w=rand(105,Math.min(310,Math.max(130,W*0.45)));
+      const h=rand(54,Math.min(150,Math.max(78,H*0.28)));
+      burstWindows.push({
+        x:rand(-w*0.08,Math.max(0,W-w*0.92)),
+        y:rand(-h*0.08,Math.max(0,H-h*0.92)),
+        w,h,index:i,showAt:startedAt+i*POPUP_STAGGER_MS
       });
-    });
-    return (MAX_WINDOWS - 1) * POPUP_STAGGER_MS + POPUP_FADE_MS + 20;
+    }
+    drawPopupBurst(startedAt);
+    return (MAX_WINDOWS-1)*POPUP_STAGGER_MS+POPUP_FADE_MS+20;
   }
 
   function captureFrame() {
@@ -712,20 +730,9 @@
     state="morph";
     layer.classList.remove("burst");
     layer.classList.add("morph");
-
-    // Force the browser to register the current popup positions before the CRT-style collapse.
-    for(const win of windows) win.style.transition="";
-    void layer.offsetWidth;
-
-    for(const win of windows) {
-      const top=parseFloat(win.style.top)||0;
-      const height=parseFloat(win.style.height)||0;
-      // Move the top edge down by half the height so each window collapses toward its own center line.
-      win.style.top=(top+height/2)+"px";
-      win.style.height="0px";
-      win.style.opacity="1";
-    }
-    morphTimer=window.setTimeout(startMovie,MORPH_MS + 30);
+    morphStartTime=performance.now();
+    // Each cached popup shrinks vertically around its own centre line.
+    morphTimer=window.setTimeout(startMovie,MORPH_MS+30);
   }
 
   function startMovie() {
@@ -809,10 +816,10 @@
   }
 
   function tick(now) {
-    if(state==="playing") updateFromCurrentFrame(now);
-    buildPopupTextures();
-  resizePlaybackCanvas();
-  requestAnimationFrame(tick);
+    if(state==="burst") drawPopupBurst(now);
+    else if(state==="morph") drawPopupCollapse(now);
+    else if(state==="playing") updateFromCurrentFrame(now);
+    requestAnimationFrame(tick);
   }
 
   document.addEventListener("pointerdown",onPointerDown,{passive:true});
@@ -833,6 +840,8 @@
     }
   });
 
+  buildPopupTextures();
+  resizePlaybackCanvas();
   requestAnimationFrame(tick);
 })();
 </script>
