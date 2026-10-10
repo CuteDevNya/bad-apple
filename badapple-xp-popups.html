@@ -533,7 +533,7 @@
   }
 
   function startMorph() {
-    if(state!=="burst") return;
+    if(state!=="burst" && state!=="waiting-frame") return;
     if(!firstTiles) {
       // If video metadata has not loaded yet, hold the popups until the first frame is available.
       state="waiting-frame";
