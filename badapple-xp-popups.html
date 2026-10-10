@@ -335,9 +335,7 @@
   let state = "intro";
   let sourceW = 0, sourceH = 0;
   let frameRect = {x:0,y:0,w:1,h:1};
-  let firstFrameRgba = null;
-  let firstTiles = null;
-  let windows = [];
+   let windows = [];
   let burstWindows = [];
   let morphStartTime = 0;
   let audioContext = null, audioGain = null, audioSource = null;
@@ -467,33 +465,7 @@
     return (MAX_WINDOWS-1)*POPUP_STAGGER_MS+POPUP_FADE_MS+20;
   }
 
-  function captureFrame() {
-    if(!video.videoWidth||!video.videoHeight) return false;
-    if(video.currentTime>0.04) {
-      video.pause();
-      try { video.currentTime=0; } catch(_) {}
-      return false;
-    }
-    sourceW = video.videoWidth;
-    sourceH = video.videoHeight;
-    const sampler = captureFrame.canvas || (captureFrame.canvas = document.createElement("canvas"));
-    sampler.width = sourceW;
-    sampler.height = sourceH;
-    const c = sampler.getContext("2d",{willReadFrequently:true});
-    try {
-      c.drawImage(video,0,0,sourceW,sourceH);
-      const data = c.getImageData(0,0,sourceW,sourceH).data;
-      firstFrameRgba = new Uint8ClampedArray(data);
-      frameRect = getFrameRect();
-      firstTiles = makeTiles(firstFrameRgba);
-      return true;
-    } catch(error) {
-      console.error("Bad Apple frame could not be sampled.",error);
-      return false;
-    }
-  }
-
-  function buildBaseMask(rgba,sw,sh,gw,gh) {
+   function buildBaseMask(rgba,sw,sh,gw,gh) {
     const mask = new Uint8Array(gw*gh);
     for(let gy=0;gy<gh;gy++) {
       const sy0 = Math.floor(gy*sh/gh);
@@ -765,29 +737,7 @@
     lastUpdate=0;
   }
 
-  function captureFirstFrame() {
-    if(firstTiles||!video.videoWidth||!video.videoHeight) return;
-    if(video.currentTime>0.04) {
-      video.pause();
-      try { video.currentTime=0; } catch(_) {}
-      return;
-    }
-    sourceW=video.videoWidth;sourceH=video.videoHeight;
-    frameRect=getFrameRect();
-    const sampler=captureFirstFrame.canvas||(captureFirstFrame.canvas=document.createElement("canvas"));
-    sampler.width=sourceW;sampler.height=sourceH;
-    const c=sampler.getContext("2d",{willReadFrequently:true});
-    try {
-      c.drawImage(video,0,0,sourceW,sourceH);
-      firstFrameRgba=new Uint8ClampedArray(c.getImageData(0,0,sourceW,sourceH).data);
-      firstTiles=makeTiles(firstFrameRgba);
-      if(state==="waiting-frame") startMorph();
-    } catch(error) {
-      console.error("Could not decode Bad Apple frame zero.",error);
-    }
-  }
-
-  function updateFromCurrentFrame(now) {
+   function updateFromCurrentFrame(now) {
     if(state!=="playing"||now-lastUpdate<55||layoutBusy||!video.videoWidth) return;
     lastUpdate=now;
     layoutBusy=true;
@@ -826,11 +776,7 @@
   video.addEventListener("loadedmetadata",()=>{
     sourceW=video.videoWidth;sourceH=video.videoHeight;frameRect=getFrameRect();
   });
-  video.addEventListener("loadeddata",captureFirstFrame);
-  video.addEventListener("seeked",()=>{
-    if(!firstTiles) captureFirstFrame();
-  });
-  video.addEventListener("error",()=>console.error("bad_apple.mp4 could not be loaded from the repository root."));
+   video.addEventListener("error",()=>console.error("bad_apple.mp4 could not be loaded from the repository root."));
   window.addEventListener("resize",()=>{
     frameRect=getFrameRect();
     if(state==="playing") resizePlaybackCanvas();
