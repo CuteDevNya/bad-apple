@@ -4,335 +4,327 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="theme-color" content="#000000">
-<title>Bad Apple — Constellation</title>
+<title>Bad Apple — SIGNAL//VOID</title>
 <style>
   * { box-sizing:border-box; }
   html,body { width:100%;height:100%;margin:0;overflow:hidden;background:#000; }
-  body { position:fixed;inset:0;color:#fff;user-select:none;-webkit-user-select:none;touch-action:manipulation;cursor:pointer; }
-  #stage { position:absolute;inset:0;display:grid;place-items:center;overflow:hidden;background:#000; }
-  #frame { position:relative;flex:none;overflow:hidden;background:#000;isolation:isolate; }
+  body { position:fixed;inset:0;user-select:none;-webkit-user-select:none;touch-action:manipulation; }
+  #screen { position:absolute;inset:0;width:100%;height:100%;display:block;background:#000; }
   #video { position:fixed;width:1px;height:1px;left:-20px;top:-20px;opacity:0;pointer-events:none; }
-  .fragment {
-    position:absolute;display:flex;align-items:center;justify-content:center;
-    min-width:0;min-height:0;overflow:hidden;white-space:nowrap;line-height:1;
-    transform-origin:center center;
-    transform:translate(-50%,-50%) translate(var(--from-x),var(--from-y)) rotate(var(--spin-start)) scale(var(--scale-start));
-    transition:transform 1280ms cubic-bezier(.16,.82,.2,1), opacity 100ms linear;
-    will-change:transform,opacity;pointer-events:none;contain:layout style paint;
-    border:1px solid var(--edge);border-radius:var(--radius);
-    background:var(--paint);color:var(--ink);
-    font-family:var(--font);font-size:var(--font-size);font-weight:var(--weight);
-    text-shadow:var(--shadow);box-shadow:var(--glow);
-    clip-path:var(--cut,none);
-  }
-  #frame.dispersed .fragment {
-    transform:translate(-50%,-50%) rotate(var(--spin-end)) scale(var(--scale-end));
-  }
-  .fragment.glyph { background:transparent;border-color:transparent;box-shadow:none; }
-  .fragment.ring { background:transparent;border-width:2px;border-radius:50%; }
-  .fragment.shard { clip-path:polygon(4% 12%,96% 0,72% 100%,0 72%);border-radius:0; }
-  .fragment.cross { background:transparent;border:0;box-shadow:none; }
-  .fragment.cross::before,.fragment.cross::after { content:"";position:absolute;background:var(--paint);border-radius:9px; }
-  .fragment.cross::before { width:100%;height:22%;top:39%;left:0; }
-  .fragment.cross::after { width:22%;height:100%;left:39%;top:0; }
-  .fragment.spark { background:var(--paint);border:0;border-radius:0;clip-path:polygon(50% 0,61% 37%,100% 50%,61% 63%,50% 100%,39% 63%,0 50%,39% 37%); }
-  .fragment.pill { border-radius:999px; }
-  #frame.playing .fragment {
-    color:#fff!important;border-color:#fff!important;box-shadow:none!important;text-shadow:none!important;
-  }
-  #frame.playing .fragment:not(.glyph):not(.ring):not(.cross) { background:#fff!important; }
-  #frame.playing .fragment.glyph,#frame.playing .fragment.cross { background:transparent!important; }
-  #frame.playing .fragment.cross::before,#frame.playing .fragment.cross::after { background:#fff!important; }
-  #frame.playing .fragment.ring { background:transparent!important;border-color:#fff!important; }
-  @media (prefers-reduced-motion:reduce) {
-    .fragment { transition-duration:800ms; }
-  }
 </style>
 </head>
 <body>
-<main id="stage" aria-label="Bad Apple Constellation">
-  <div id="frame" aria-hidden="true"></div>
-  <video id="video" playsinline preload="auto" loop>
-    <source src="bad_apple.mp4" type="video/mp4">
-  </video>
-</main>
+<canvas id="screen" aria-label="Bad Apple Signal Void animation"></canvas>
+<video id="video" playsinline preload="auto" loop>
+  <source src="bad_apple.mp4" type="video/mp4">
+</video>
 <script>
 (() => {
   "use strict";
-  const stage = document.getElementById("stage");
-  const frame = document.getElementById("frame");
+  const canvas = document.getElementById("screen");
+  const ctx = canvas.getContext("2d", { alpha:false });
   const video = document.getElementById("video");
-  const sampleCanvas = document.createElement("canvas");
-  const sampleContext = sampleCanvas.getContext("2d", { willReadFrequently:true });
-  const appleCanvas = document.createElement("canvas");
-  appleCanvas.width = appleCanvas.height = 1000;
-  const appleContext = appleCanvas.getContext("2d");
-  const applePath = new Path2D("M500 242 C447 185 410 94 323 126 C222 78 116 135 77 271 C19 470 105 712 261 851 C350 930 431 898 500 863 C569 898 650 930 739 851 C895 712 981 470 923 271 C884 135 778 78 677 126 C590 94 553 185 500 242 Z");
-  applePath.addPath(new Path2D("M491 244 C477 183 492 129 535 80 L559 93 C523 151 518 197 527 244 Z"));
-  applePath.addPath(new Path2D("M528 145 C559 61 659 43 708 74 C679 151 598 183 528 145 Z"));
+  const raster = document.createElement("canvas");
+  const rasterCtx = raster.getContext("2d", { willReadFrequently:true });
+  const bayer = [
+    [0,8,2,10],
+    [12,4,14,6],
+    [3,11,1,9],
+    [15,7,13,5]
+  ];
 
-  const palette = ["#f8fbff","#e2f5ff","#a9e8ff","#a4f5d2","#dbff75","#fff0b5","#f5d2ff","#ffffff","#b9c7ff","#ffcbb8"];
-  const glyphs = ["✦","✧","◇","◆","△","▽","＋","×","·","∗","◌","◦","/","\\","|","—","∴","♡","猫","夢","0","1","*","+","=","#","%","~"];
-  const classes = ["tile","tile","glyph","ring","shard","cross","spark","pill"];
-  const fonts = ["Arial,sans-serif","Georgia,serif","monospace","system-ui,sans-serif"];
-  let pieces = [];
-  let frameWidth = 1, frameHeight = 1, aspect = 4/3;
-  let sampleWidth = 0, sampleHeight = 0, pixelData = null;
-  let foregroundBright = true, polarityDetected = false;
-  let introReady = false, startRequested = false, dispersed = false;
-  let playbackStarted = false, awaitingPlayback = false, renderToken = 0;
-  let resizeTimer = 0;
-  let lastError = "";
+  let W = 1, H = 1, dpr = 1;
+  let stars = [];
+  let state = "intro";
+  let startTime = 0;
+  let clickPoint = { x:0, y:0 };
+  let sourceW = 0, sourceH = 0;
+  let sourceImage = null, outputImage = null;
+  let nativePixelsReady = false;
+  let startPromise = null;
+  let retryPlayback = false;
 
-  const random = (min,max) => min + Math.random() * (max-min);
-  const choose = array => array[Math.floor(Math.random()*array.length)];
-  const clamp = (value,min,max) => Math.max(min,Math.min(max,value));
+  const rand = (a,b) => a + Math.random() * (b-a);
+  const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+  const smooth = t => t*t*(3-2*t);
 
-  function resizeFrame() {
-    if (!video.videoWidth || !video.videoHeight) return;
-    aspect = video.videoWidth / video.videoHeight;
-    const availableWidth = Math.max(1,stage.clientWidth);
-    const availableHeight = Math.max(1,stage.clientHeight);
-    frameWidth = Math.max(1,Math.min(availableWidth,availableHeight*aspect));
-    frameHeight = frameWidth / aspect;
-    frame.style.width = frameWidth + "px";
-    frame.style.height = frameHeight + "px";
-    frame.style.aspectRatio = video.videoWidth + " / " + video.videoHeight;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.max(1,Math.floor(W*dpr));
+    canvas.height = Math.max(1,Math.floor(H*dpr));
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    if (state === "intro") createStars();
   }
 
-  function detectForeground(data) {
-    let dark = 0, bright = 0;
-    for (let i=0;i<data.length;i+=4) {
-      const l = data[i]*0.2126 + data[i+1]*0.7152 + data[i+2]*0.0722;
-      if (l < 128) dark++; else bright++;
-    }
-    foregroundBright = dark > bright;
-    polarityDetected = true;
-  }
-
-  function makePiece(point, cellWidth, cellHeight) {
-    const element = document.createElement("span");
-    const type = choose(classes);
-    element.className = "fragment " + type;
-    element.setAttribute("aria-hidden","true");
-    const w = cellWidth * random(0.48,1.25);
-    const h = cellHeight * random(0.48,1.25);
-    element.style.left = (point.x/frameWidth*100) + "%";
-    element.style.top = (point.y/frameHeight*100) + "%";
-    element.style.width = (w/frameWidth*100) + "%";
-    element.style.height = (h/frameHeight*100) + "%";
-    element.style.setProperty("--paint",choose(palette));
-    element.style.setProperty("--ink",Math.random()<0.32 ? "#101018" : "#ffffff");
-    element.style.setProperty("--edge",choose(palette)+"aa");
-    element.style.setProperty("--radius",type==="ring" ? "50%" : (Math.random()<0.6 ? random(0,5)+"px" : "1px"));
-    element.style.setProperty("--font",choose(fonts));
-    element.style.setProperty("--font-size",random(7,15)+"px");
-    element.style.setProperty("--weight",choose([500,650,800,900]));
-    element.style.setProperty("--shadow",Math.random()<0.14 ? "0 0 8px "+choose(palette)+"88" : "none");
-    element.style.setProperty("--glow",Math.random()<0.12 ? "0 0 5px "+choose(palette)+"66" : "none");
-    element.textContent = (type==="glyph" || (type==="tile" && Math.random()<0.24)) ? choose(glyphs) : "";
-    const appleX = point.appleX;
-    const appleY = point.appleY;
-    element.style.setProperty("--from-x",(appleX-point.x)+"px");
-    element.style.setProperty("--from-y",(appleY-point.y)+"px");
-    element.style.setProperty("--spin-start",random(-110,110)+"deg");
-    element.style.setProperty("--spin-end",random(-24,24)+"deg");
-    element.style.setProperty("--scale-start",random(0.55,1.25));
-    element.style.setProperty("--scale-end",random(0.68,1.17));
-    const opacity = random(0.72,0.98);
-    element.style.opacity = opacity;
-    frame.appendChild(element);
-    return { element, u:point.x/frameWidth, v:point.y/frameHeight, lastOpacity:opacity };
-  }
-
-  function createPositions(count, columns, rows, cellWidth, cellHeight) {
-    const points = [];
-    for (let row=0;row<rows && points.length<count;row++) {
-      for (let col=0;col<columns && points.length<count;col++) {
-        const x = (col+random(0.10,0.90))*cellWidth;
-        const y = (row+random(0.10,0.90))*cellHeight;
-        points.push({ x, y, appleX:0, appleY:0 });
-      }
-    }
-    let attempts = 0;
-    while (points.length<count && attempts<count*35) {
-      attempts++;
-      const nx = random(0.035,0.965);
-      const ny = random(0.035,0.965);
-      if (!appleContext.isPointInPath(applePath,nx*1000,ny*1000)) continue;
-      points.push({
-        x:frameWidth*nx,
-        y:frameHeight*ny,
-        appleX:0,
-        appleY:0
+  function createStars() {
+    const count = Math.round(clamp(W*H/1150,360,1050));
+    stars = [];
+    for (let i=0;i<count;i++) {
+      const x = rand(0,W), y = rand(0,H);
+      const dx = x-W*0.5, dy = y-H*0.5;
+      stars.push({
+        x,y,
+        radius:rand(0.35,1.65),
+        alpha:rand(0.16,0.82),
+        phase:rand(0,Math.PI*2),
+        twinkle:rand(0.4,2.1),
+        angle:Math.atan2(dy,dx),
+        orbit:Math.hypot(dx,dy),
+        direction:Math.random()<0.5?-1:1,
+        lane:rand(12,135),
+        drift:rand(0.1,0.7),
+        hue:Math.random()<0.19,
+        streak:Math.random()<0.12
       });
     }
-    while (points.length<count) points.push({x:random(0,frameWidth),y:random(0,frameHeight),appleX:0,appleY:0});
-    const applePoints = [];
-    let appleAttempts = 0;
-    while (applePoints.length<count && appleAttempts<count*35) {
-      appleAttempts++;
-      const nx = random(0.025,0.975), ny = random(0.025,0.975);
-      if (appleContext.isPointInPath(applePath,nx*1000,ny*1000)) {
-        applePoints.push({
-          x:frameWidth*(0.5+(nx-0.5)*0.78),
-          y:frameHeight*(0.055+ny*0.89)
+  }
+
+  function fitRect() {
+    const aspect = sourceW && sourceH ? sourceW/sourceH : 4/3;
+    const width = Math.min(W,H*aspect);
+    const height = width/aspect;
+    return { x:(W-width)/2, y:(H-height)/2, width, height };
+  }
+
+  function drawIntro(now) {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0,0,W,H);
+    const p = state === "intro" ? 0 : clamp((now-startTime)/1180,0,1);
+    const eased = smooth(p);
+    const cx = W/2, cy = H/2;
+    const elapsed = now*0.001;
+
+    // A quiet orbital anomaly: this start is a moving field, not DOM fragments.
+    ctx.save();
+    ctx.translate(cx,cy);
+    for (let ring=0;ring<5;ring++) {
+      const base = Math.min(W,H)*(0.105+ring*0.052);
+      const r = base*(1-eased*0.84);
+      ctx.beginPath();
+      ctx.strokeStyle = "rgba(215,235,255," + ((0.10-ring*0.012)*(1-eased*0.35)) + ")";
+      ctx.lineWidth = ring===0 ? 1.2 : 0.6;
+      ctx.setLineDash([2+ring*1.7,7+ring*4.3]);
+      ctx.lineDashOffset = -elapsed*(ring%2 ? -6 : 5)*(ring+1);
+      ctx.ellipse(0,0,r,r*(0.45+ring*0.12),elapsed*(ring%2 ? -0.12 : 0.09),0,Math.PI*2);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    const core = Math.max(1.5,Math.min(W,H)*0.044*(1-eased*0.85));
+    const glow = ctx.createRadialGradient(0,0,0,0,0,Math.max(3,core*4.8));
+    glow.addColorStop(0,"rgba(235,248,255,"+(0.30*(1-eased*0.3))+")");
+    glow.addColorStop(0.24,"rgba(90,145,185,0.12)");
+    glow.addColorStop(1,"rgba(10,20,35,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(0,0,Math.max(3,core*4.8),0,Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(235,247,255,"+(0.62*(1-eased))+")";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(0,0,core,elapsed*0.8,elapsed*0.8+Math.PI*1.63);
+    ctx.stroke();
+    ctx.restore();
+
+    // The click sends a shockwave from wherever the user touched.
+    if (state === "warping") {
+      const age = clamp((now-startTime)/1180,0,1);
+      for (let i=0;i<3;i++) {
+        const radius = age*Math.hypot(W,H)*0.7-i*26;
+        if (radius<0) continue;
+        ctx.beginPath();
+        ctx.arc(clickPoint.x,clickPoint.y,radius,0,Math.PI*2);
+        ctx.strokeStyle = "rgba(210,239,255,"+((1-age)*0.24)+")";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    for (const star of stars) {
+      let x = star.x+Math.sin(elapsed*star.drift+star.phase)*5;
+      let y = star.y+Math.cos(elapsed*star.drift*0.8+star.phase)*5;
+      let alpha = star.alpha*(0.65+0.35*Math.sin(elapsed*star.twinkle+star.phase));
+      let radius = star.radius;
+      if (state === "warping") {
+        const q = smooth(clamp((now-startTime)/1040,0,1));
+        const dx = star.x-cx, dy = star.y-cy;
+        const initialR = Math.hypot(dx,dy);
+        const angle = star.angle+q*(star.direction*1.7+Math.sin(star.phase)*0.35);
+        const targetR = star.lane*(1-q)+Math.min(W,H)*0.018*q;
+        const r = initialR*(1-q)+targetR*q;
+        x = cx+Math.cos(angle)*r;
+        y = cy+Math.sin(angle)*r;
+        alpha = star.alpha*(1-q*0.3);
+        radius = star.radius*(1+q*1.3);
+        const pull = q*q*0.28;
+        x += (clickPoint.x-x)*pull;
+        y += (clickPoint.y-y)*pull;
+      }
+      if (x<-3 || y<-3 || x>W+3 || y>H+3) continue;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = star.hue ? "#b4e9ff" : "#e9f4ff";
+      if (star.streak && state === "warping") {
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = radius*0.7;
+        ctx.beginPath();
+        ctx.moveTo(x,y);
+        ctx.lineTo(x-Math.cos(star.angle)*radius*7,y-Math.sin(star.angle)*radius*7);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.arc(x,y,radius,0,Math.PI*2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    if (state === "intro") {
+      const pulse = 0.28+0.19*(0.5+0.5*Math.sin(elapsed*1.25));
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = "#cfe2f2";
+      ctx.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("TOUCH TO BREAK THE SIGNAL",W/2,H*0.79);
+      ctx.globalAlpha = 1;
+      const notch = 12+4*Math.sin(elapsed*1.5);
+      ctx.fillStyle = "rgba(220,241,255,"+pulse+")";
+      ctx.fillRect(cx-notch/2,H*0.79+15,notch,1);
+    }
+  }
+
+  function setupNativeRaster() {
+    if (!video.videoWidth || !video.videoHeight) return;
+    sourceW = video.videoWidth;
+    sourceH = video.videoHeight;
+    // Full-resolution work buffers use exactly the source video's native dimensions.
+    raster.width = sourceW;
+    raster.height = sourceH;
+    sourceImage = rasterCtx.createImageData(sourceW,sourceH);
+    outputImage = rasterCtx.createImageData(sourceW,sourceH);
+    nativePixelsReady = true;
+  }
+
+  function processNativeFrame(now) {
+    if (!nativePixelsReady || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+    rasterCtx.drawImage(video,0,0,sourceW,sourceH);
+    sourceImage = rasterCtx.getImageData(0,0,sourceW,sourceH);
+    const src = sourceImage.data;
+    const out = outputImage.data;
+    const time = now*0.001;
+    for (let y=0;y<sourceH;y++) {
+      const band = Math.sin(y*0.031+time*2.7)*Math.sin(time*0.7);
+      const tear = Math.sin(y*0.008-time*1.4)>0.993 ? Math.sin(time*15+y)*3 : 0;
+      const shift = Math.round(band*1.45+tear);
+      for (let x=0;x<sourceW;x++) {
+        const sx = clamp(x+shift,0,sourceW-1);
+        const si = (y*sourceW+sx)*4;
+        const di = (y*sourceW+x)*4;
+        const lum = src[si]*0.2126+src[si+1]*0.7152+src[si+2]*0.0722;
+        // Ordered dither on every native source pixel, never a reduced thumbnail.
+        const limit = 112+(bayer[y&3][x&3]-7.5)*5.4;
+        let value = lum>limit ? 255 : 0;
+        if (y%4===0 && value>0) value = 225;
+        out[di] = value;
+        out[di+1] = value;
+        out[di+2] = value;
+        out[di+3] = 255;
+      }
+    }
+    rasterCtx.putImageData(outputImage,0,0);
+  }
+
+  function drawVideo(now) {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0,0,W,H);
+    processNativeFrame(now);
+    if (!nativePixelsReady) return;
+    const rect = fitRect();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(raster,rect.x,rect.y,rect.width,rect.height);
+    ctx.imageSmoothingEnabled = true;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rect.x,rect.y,rect.width,rect.height);
+    ctx.clip();
+    ctx.globalAlpha = 0.13;
+    ctx.fillStyle = "#000";
+    for (let y=rect.y;y<rect.y+rect.height;y+=4) ctx.fillRect(rect.x,y,rect.width,1);
+    ctx.globalAlpha = 1;
+    const vignette = ctx.createRadialGradient(W/2,H/2,Math.min(rect.width,rect.height)*0.20,W/2,H/2,Math.max(W,H)*0.72);
+    vignette.addColorStop(0,"rgba(0,0,0,0)");
+    vignette.addColorStop(1,"rgba(0,0,0,0.30)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(rect.x,rect.y,rect.width,rect.height);
+    ctx.restore();
+  }
+
+  function beginVideoPlayback() {
+    // The first real tap starts a muted stream immediately to obtain browser permission.
+    video.muted = true;
+    video.volume = 1;
+    try {
+      startPromise = video.play();
+      if (startPromise && typeof startPromise.then === "function") {
+        startPromise.then(() => { retryPlayback = false; }).catch(() => {
+          retryPlayback = true;
+          startPromise = null;
         });
       }
-    }
-    while (applePoints.length<count) applePoints.push({x:frameWidth*random(0.3,0.7),y:frameHeight*random(0.2,0.8)});
-    for (let i=0;i<count;i++) {
-      points[i].appleX = applePoints[i].x;
-      points[i].appleY = applePoints[i].y;
-    }
-    return points;
-  }
-
-  function buildApple() {
-    if (!video.videoWidth) return;
-    resizeFrame();
-    const targetCount = clamp(Math.round(frameWidth*frameHeight/1400),560,1000);
-    const columns = Math.max(1,Math.round(Math.sqrt(targetCount*aspect)));
-    const rows = Math.ceil(targetCount/columns);
-    const cellWidth = frameWidth/columns;
-    const cellHeight = frameHeight/rows;
-    const points = createPositions(targetCount,columns,rows,cellWidth,cellHeight);
-    frame.replaceChildren();
-    pieces = points.map(point => makePiece(point,cellWidth,cellHeight));
-    introReady = true;
-    if (startRequested) beginExperience();
-  }
-
-  function disperse() {
-    if (!introReady || dispersed) return;
-    dispersed = true;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      frame.classList.add("dispersed");
-    }));
-    window.setTimeout(() => {
-      frame.classList.add("playing");
-      renderFrame();
-      if (playbackStarted && !video.paused) startRenderer();
-    },1300);
-  }
-
-  function startVideo() {
-    video.muted = false;
-    video.volume = 1;
-    let result;
-    try { result = video.play(); }
-    catch (error) { awaitingPlayback = true; return; }
-    if (result && typeof result.then === "function") {
-      result.then(() => {
-        playbackStarted = true;
-        awaitingPlayback = false;
-        if (frame.classList.contains("playing")) startRenderer();
-      }).catch(error => {
-        awaitingPlayback = true;
-        lastError = error && error.message ? error.message : "Playback was blocked";
-      });
+    } catch (_) {
+      retryPlayback = true;
+      startPromise = null;
     }
   }
 
-  function beginExperience() {
-    if (!introReady) return;
-    disperse();
-    if (!playbackStarted) startVideo();
-  }
-
-  function onInteraction() {
-    if (awaitingPlayback && dispersed) {
-      startVideo();
-      return;
+  function start(event) {
+    if (state === "intro") {
+      const rect = canvas.getBoundingClientRect();
+      clickPoint = { x:event ? event.clientX-rect.left : W/2, y:event ? event.clientY-rect.top : H/2 };
+      state = "warping";
+      startTime = performance.now();
+      beginVideoPlayback();
+    } else if (retryPlayback) {
+      video.muted = false;
+      startPromise = video.play();
+      retryPlayback = false;
     }
-    if (startRequested) {
-      if (dispersed && !playbackStarted) startVideo();
-      return;
-    }
-    startRequested = true;
-    beginExperience();
   }
-  document.addEventListener("pointerdown",onInteraction,{passive:true});
+  canvas.addEventListener("pointerdown",start,{passive:true});
 
-  function renderFrame() {
-    if (!frame.classList.contains("playing") ||
-        video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
-        !video.videoWidth || !pieces.length || !sampleContext) return;
+  function revealVideo() {
+    if (state !== "warping") return;
+    state = "video";
     try {
-      // The sampling canvas uses the exact native source dimensions; no thumbnail resize.
-      sampleContext.drawImage(video,0,0,sampleWidth,sampleHeight);
-      pixelData = sampleContext.getImageData(0,0,sampleWidth,sampleHeight).data;
-      if (!polarityDetected) detectForeground(pixelData);
-      for (const piece of pieces) {
-        const sx = clamp(Math.floor(piece.u*(sampleWidth-1)),0,sampleWidth-1);
-        const sy = clamp(Math.floor(piece.v*(sampleHeight-1)),0,sampleHeight-1);
-        const offset = (sy*sampleWidth+sx)*4;
-        const l = pixelData[offset]*0.2126 + pixelData[offset+1]*0.7152 + pixelData[offset+2]*0.0722;
-        const foreground = foregroundBright ? l/255 : (255-l)/255;
-        const opacity = foreground < 0.12 ? 0 : clamp((foreground-0.12)*1.35,0,0.96);
-        if (Math.abs(opacity-piece.lastOpacity)>0.025) {
-          piece.element.style.opacity = opacity.toFixed(3);
-          piece.lastOpacity = opacity;
-        }
+      video.currentTime = 0;
+      video.muted = false;
+      if (video.paused && retryPlayback) {
+        startPromise = video.play();
+        retryPlayback = false;
       }
-    } catch (error) {
-      lastError = error && error.message ? error.message : "Could not sample frame";
-    }
+    } catch (_) {}
   }
 
-  function stopRenderer() { renderToken++; }
-  function startRenderer() {
-    stopRenderer();
-    const token = renderToken;
-    if (typeof video.requestVideoFrameCallback === "function") {
-      const next = () => {
-        if (token!==renderToken || video.paused || video.ended || !frame.classList.contains("playing")) return;
-        renderFrame();
-        video.requestVideoFrameCallback(next);
-      };
-      video.requestVideoFrameCallback(next);
-    } else {
-      const next = () => {
-        if (token!==renderToken || video.paused || video.ended || !frame.classList.contains("playing")) return;
-        renderFrame();
-        requestAnimationFrame(next);
-      };
-      requestAnimationFrame(next);
+  function frame(now) {
+    if (state === "intro" || state === "warping") {
+      drawIntro(now);
+      if (state === "warping" && now-startTime >= 1180) revealVideo();
     }
+    if (state === "video") drawVideo(now);
+    if (state === "video" && video.paused && !retryPlayback) retryPlayback = true;
+    requestAnimationFrame(frame);
   }
 
-  video.addEventListener("loadedmetadata",() => {
-    aspect = video.videoWidth/video.videoHeight || 4/3;
-    sampleWidth = video.videoWidth;
-    sampleHeight = video.videoHeight;
-    sampleCanvas.width = sampleWidth;
-    sampleCanvas.height = sampleHeight;
-    buildApple();
-  });
-  video.addEventListener("loadeddata",() => {
-    if (!polarityDetected && sampleWidth && sampleHeight) {
-      try {
-        sampleContext.drawImage(video,0,0,sampleWidth,sampleHeight);
-        detectForeground(sampleContext.getImageData(0,0,sampleWidth,sampleHeight).data);
-      } catch (_) {}
-    }
-    if (startRequested && !dispersed) beginExperience();
-  });
-  video.addEventListener("playing",() => {
-    playbackStarted = true;
-    awaitingPlayback = false;
-    if (frame.classList.contains("playing")) startRenderer();
-  });
-  video.addEventListener("pause",stopRenderer);
-  video.addEventListener("seeked",renderFrame);
-  video.addEventListener("error",() => {
-    console.error("Bad Apple video could not be loaded. Expected bad_apple.mp4 in the repository root.",lastError);
-  });
-  window.addEventListener("resize",() => {
-    if (startRequested) return;
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(buildApple,120);
-  });
+  video.addEventListener("loadedmetadata",setupNativeRaster);
+  video.addEventListener("loadeddata",() => { if (!nativePixelsReady) setupNativeRaster(); });
+  video.addEventListener("playing",() => { if (state === "video") video.muted = false; });
+  video.addEventListener("error",() => console.error("Could not load bad_apple.mp4 from the repository root."));
+  window.addEventListener("resize",resize);
+
+  resize();
+  createStars();
+  requestAnimationFrame(frame);
 })();
 </script>
 </body>
