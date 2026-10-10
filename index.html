@@ -9,9 +9,8 @@
 <body>
 <script>
 (async () => {
-  // Die Git-Tree-API findet HTML-Seiten auch in Unterordnern.
-  // Nur diese index.html wird ausgeschlossen, damit keine Weiterleitungsschleife entsteht.
-  const fallbackPage = "badapple-elements.html";
+  const fallbackPage = "badapple/badapple-elements.html";
+
   try {
     const response = await fetch(
       "https://api.github.com/repos/CuteDevNya/bad-apple/git/trees/main?recursive=1",
@@ -23,18 +22,17 @@
     const pages = (result.tree || [])
       .filter(item =>
         item.type === "blob" &&
-        /\.html?$/i.test(item.path) &&
-        item.path.toLowerCase() !== "index.html"
+        item.path.startsWith("badapple/") &&
+        /\.html?$/i.test(item.path)
       )
       .map(item => item.path);
 
-    if (!pages.length) throw new Error("Keine auswählbaren HTML-Seiten gefunden");
+    if (!pages.length) throw new Error("Keine HTML-Seiten im Ordner badapple gefunden");
 
     const selectedPage = pages[Math.floor(Math.random() * pages.length)];
     const encodedPath = selectedPage.split("/").map(encodeURIComponent).join("/");
     window.location.replace(new URL(encodedPath, window.location.href).href);
   } catch (error) {
-    // Funktioniert auch dann weiter, wenn die API vorübergehend nicht erreichbar ist.
     window.location.replace(new URL(fallbackPage, window.location.href).href);
   }
 })();
