@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#38221d">
+<title>Bad Apple — Paper Shadow Theatre</title>
+<style>
+  * { box-sizing:border-box; }
+  html,body { width:100%;height:100%;margin:0;overflow:hidden;background:#211713; }
+  body { position:fixed;inset:0;touch-action:manipulation;user-select:none;-webkit-user-select:none; }
+  #stage { display:block;width:100%;height:100%; }
+  #video { position:fixed;width:1px;height:1px;left:-20px;top:-20px;opacity:0;pointer-events:none; }
+  #error { position:fixed;left:14px;right:14px;bottom:16px;display:none;padding:11px 13px;
+    color:#f5e7d0;background:#4b2924;border:1px solid #b98659;border-radius:4px;
+    font:12px/1.45 Georgia,serif;text-align:center; }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Bad Apple in einem handgemachten Scherenschnitt-Papiertheater"></canvas>
+<video id="video" playsinline preload="auto" loop src="bad_apple.mp4"></video>
+<div id="error">Das Video „bad_apple.mp4“ konnte nicht geladen werden. Bitte prüfe, ob es neben dieser HTML-Datei liegt.</div>
+<script>
+(() => {
+  "use strict";
+  const canvas = document.getElementById("stage");
+  const ctx = canvas.getContext("2d", {alpha:false});
+  const video = document.getElementById("video");
+  const errorBox = document.getElementById("error");
+
+  const INK = "#211915";
+  const PAPER = "#ead8b3";
+  const PAPER_LIGHT = "#f5e8ca";
+  const RED = "#8f3930";
+  const GOLD = "#bd9257";
+  const UPDATE_MS = 45;
+  const OPEN_MS = 1550;
+
+  let state = "closed";
+  let openedAt = 0;
+  let lastSampleAt = 0;
+  let pixelRatio = 1;
+  let book = {x:0,y:0,w:1,h:1};
+  let screen = {x:0,y:0,w:1,h:1};
+  let screenFrame = {x:0,y:0,w:1,h:1};
+  let sampleW = 320, sampleH = 240;
+  let processedReady = false;
+  let outputImage = null;
+  const videoSampleCanvas = document.createElement("canvas");
+  const videoSampleCtx = videoSampleCanvas.getContext("2d", {willReadFrequently:true});
+  const cutoutCanvas = document.createElement("canvas");
+  const cutoutCtx = cutoutCanvas.getContext("2d", {willReadFrequently:true});
+  let audioContext = null, audioGain = null, audioSource = null;
+  let paperMarks = [];
+  let stageFibers = [];
+  let confetti = [];
+  let videoAspect = 4/3;
+
+  const rand = (a,b) => a + Math.random()*(b-a);
+  const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+  const easeInOut = t => t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+
+  function roundRectPath(c,x,y,w,h,r) {
+    r=Math.min(r,w/2,h/2);
+    c.beginPath();
+    c.moveTo(x+r,y); c.lineTo(x+w-r,y); c.quadraticCurveTo(x+w,y,x+w,y+r);
+    c.lineTo(x+w,y+h-r); c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    c.lineTo(x+r,y+h); c.quadraticCurveTo(x,y+h,x,y+h-r);
+    c.lineTo(x,y+r); c.quadraticCurveTo(x,y,x+r,y); c.closePath();
+  }
+
+  function fit(w,h,aspect) {
+    let fw=w,fh=fw/aspect;
+    if(fh>h){fh=h;fw=fh*aspect;}
+    return {w:fw,h:fh};
+  }
+
+  function geometry() {
+    const W=window.innerWidth,H=window.innerHeight;
+    const bw=Math.min(W*.94,H*1.22);
+    const bh=Math.min(H*.84,bw*.86);
+    const bx=(W-bw)/2,by=(H-bh)/2;
+    book={x:bx,y:by,w:bw,h:bh};
+    const max=fit(bw*.84,bh*.60,videoAspect);
+    const sx=bx+(bw-max.w)/2;
+    const sy=by+bh*.43-max.h/2;
+    screen={x:sx,y:sy,w:max.w,h:max.h};
+    const pad=clamp(Math.min(bw,bh)*.027,7,19);
+    screenFrame={x:sx-pad,y:sy-pad,w:max.w+pad*2,h:max.h+pad*2};
+  }
+
+  function resize() {
+    const W=Math.max(1,window.innerWidth),H=Math.max(1,window.innerHeight);
+    pixelRatio=Math.min(window.devicePixelRatio||1,1.75);
+    canvas.width=Math.round(W*pixelRatio);
+    canvas.height=Math.round(H*pixelRatio);
+    canvas.style.width=W+"px";
+    canvas.style.height=H+"px";
+    ctx.setTransform(pixelRatio,0,0,pixelRatio,0,0);
+    geometry();
+    const desiredW=clamp(Math.round(screen.w*pixelRatio),240,900);
+    const desiredH=Math.max(180,Math.round(desiredW/videoAspect));
+    if(desiredW!==sampleW||desiredH!==sampleH||!outputImage) {
+      sampleW=desiredW;sampleH=desiredH;
+      videoSampleCanvas.width=cutoutCanvas.width=sampleW;
+      videoSampleCanvas.height=cutoutCanvas.height=sampleH;
+      outputImage=cutoutCtx.createImageData(sampleW,sampleH);
+      processedReady=false;
+    }
+    makePaperMarks();
+  }
+
+  function makePaperMarks() {
+    paperMarks=[];
+    stageFibers=[];
+    for(let i=0;i<280;i++) paperMarks.push({
+      x:Math.random(),y:Math.random(),w:rand(.004,.035),a:rand(.025,.14),
+      tone:Math.random()<.5?0:1,bend:rand(-.5,.5),dy:rand(-.5,.5)
+    });
+    for(let i=0;i<210;i++) stageFibers.push({
+      x:Math.random(),y:Math.random(),w:rand(.003,.028),a:rand(.08,.28),
+      tone:Math.random()<.52?0:1,dy:rand(-.3,.3)
+    });
+    confetti=[];
+    for(let i=0;i<54;i++) confetti.push({
+      x:rand(-.15,.15),y:rand(-.1,.6),
+      vx:rand(-.85,.85),vy:rand(-.75,.5),
+      size:rand(3,15),aspect:rand(.45,1.8),
+      rotation:rand(0,Math.PI*2),spin:rand(-5,5),
+      color:Math.random()<.68?PAPER_LIGHT:(Math.random()<.5?RED:"#b99466"),
+      seed:Math.random()
+    });
+  }
+
+  function drawPaperGrain(x,y,w,h,marks,alpha=1) {
+    ctx.save();
+    ctx.beginPath();ctx.rect(x,y,w,h);ctx.clip();
+    for(const m of marks) {
+      const xx=x+m.x*w,yy=y+m.y*h;
+      ctx.globalAlpha=m.a*alpha;
+      ctx.strokeStyle=m.tone?"#fff2d7":"#9a754e";
+      ctx.lineWidth=m.tone?.85:.6;
+      ctx.beginPath();
+      ctx.moveTo(xx,yy);
+      ctx.quadraticCurveTo(xx+m.w*w*.5,yy+m.bend,xx+m.w*w,yy+m.dy);
+      ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    ctx.restore();
+  }
+
+  function drawOutside(now) {
+    const W=window.innerWidth,H=window.innerHeight;
+    const bg=ctx.createLinearGradient(0,0,W,H);
+    bg.addColorStop(0,"#4a3025");bg.addColorStop(.48,"#2d1c18");bg.addColorStop(1,"#17110f");
+    ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+    // Warm wooden tabletop: long, quiet grain lines.
+    for(let i=0;i<34;i++) {
+      const y=((i*43+17)%(H+38))-19;
+      ctx.globalAlpha=.025+(i%4)*.008;
+      ctx.strokeStyle=i%2?"#e1b47a":"#0b0706";
+      ctx.lineWidth=i%5===0?1.4:.65;
+      ctx.beginPath();ctx.moveTo(0,y);
+      ctx.bezierCurveTo(W*.24,y+Math.sin(i)*7,W*.67,y-Math.cos(i*.8)*9,W,y+Math.sin(i*.3)*5);
+      ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    const shade=ctx.createRadialGradient(W*.5,H*.44,Math.min(W,H)*.12,W*.5,H*.5,Math.max(W,H)*.74);
+    shade.addColorStop(0,"rgba(0,0,0,0)");shade.addColorStop(1,"rgba(0,0,0,.5)");
+    ctx.fillStyle=shade;ctx.fillRect(0,0,W,H);
+    // Dust moving slowly through lamplight.
+    for(let i=0;i<32;i++) {
+      const xx=(i*97.3+Math.sin(now*.00017+i*4)*18)%W;
+      const yy=(i*61.7+now*(.004+(i%3)*.002))%(H+20);
+      ctx.globalAlpha=.08+(i%4)*.035;
+      ctx.fillStyle="#f3d8a6";ctx.fillRect(xx,yy,1.1,1.1);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function drawBookBase() {
+    const b=book;
+    ctx.save();
+    ctx.shadowColor="rgba(0,0,0,.62)";ctx.shadowBlur=22;ctx.shadowOffsetY=12;
+    roundRectPath(ctx,b.x,b.y,b.w,b.h,Math.max(9,b.w*.025));
+    const leather=ctx.createLinearGradient(b.x,b.y,b.x+b.w,b.y+b.h);
+    leather.addColorStop(0,"#754436");leather.addColorStop(.32,"#4a2923");
+    leather.addColorStop(.72,"#341d19");leather.addColorStop(1,"#6a3b2c");
+    ctx.fillStyle=leather;ctx.fill();ctx.restore();
+
+    roundRectPath(ctx,b.x+3,b.y+3,b.w-6,b.h-6,Math.max(8,b.w*.023));
+    ctx.strokeStyle="#c49b63";ctx.lineWidth=1.2;ctx.stroke();
+    roundRectPath(ctx,b.x+7,b.y+7,b.w-14,b.h-14,Math.max(7,b.w*.019));
+    ctx.strokeStyle="rgba(236,203,151,.5)";ctx.lineWidth=.7;ctx.stroke();
+
+    const inset=Math.max(14,b.w*.035),length=Math.min(32,b.w*.055);
+    ctx.strokeStyle="#c6a16a";ctx.globalAlpha=.8;ctx.lineWidth=1;
+    for(const sx of [b.x+inset,b.x+b.w-inset]) for(const sy of [b.y+inset,b.y+b.h-inset]) {
+      const dx=sx<b.x+b.w/2?1:-1,dy=sy<b.y+b.h/2?1:-1;
+      ctx.beginPath();ctx.moveTo(sx,sy+dy*length);ctx.quadraticCurveTo(sx,sy,sx+dx*length,sy);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(sx+dx*4,sy+dy*13);ctx.quadraticCurveTo(sx+dx*10,sy+dy*10,sx+dx*13,sy+dy*4);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    ctx.fillStyle="#bda27a";ctx.fillRect(b.x+12,b.y+b.h-8,b.w-24,5);
+    ctx.strokeStyle="#8f6e4c";ctx.lineWidth=.5;
+    for(let i=0;i<4;i++){ctx.beginPath();ctx.moveTo(b.x+14,b.y+b.h-8+i*1.2);ctx.lineTo(b.x+b.w-14,b.y+b.h-8+i*1.2);ctx.stroke();}
+  }
+
+  function drawOpenPages() {
+    const b=book;
+    drawBookBase();
+    const px=b.x+11,py=b.y+12,pw=b.w-22,ph=b.h-24;
+    const paper=ctx.createLinearGradient(px,py,px+pw,py+ph);
+    paper.addColorStop(0,"#f1e3c5");paper.addColorStop(.5,"#dfc99d");paper.addColorStop(1,"#f4e6c7");
+    roundRectPath(ctx,px,py,pw,ph,4);ctx.fillStyle=paper;ctx.fill();
+    const crease=ctx.createLinearGradient(px+pw*.48,0,px+pw*.52,0);
+    crease.addColorStop(0,"rgba(91,50,28,0)");crease.addColorStop(.5,"rgba(82,49,30,.24)");crease.addColorStop(1,"rgba(91,50,28,0)");
+    ctx.fillStyle=crease;ctx.fillRect(px+pw*.47,py,pw*.06,ph);
+    drawPaperGrain(px,py,pw,ph,paperMarks,.88);
+
+    ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="#6d4630";
+    ctx.font="italic "+Math.max(10,Math.min(16,b.w*.018))+"px Georgia,serif";
+    ctx.fillText("A LITTLE SHADOW PLAY",b.x+b.w/2,b.y+b.h*.105);
+    ctx.strokeStyle="#a4774c";ctx.lineWidth=.6;
+    ctx.beginPath();ctx.moveTo(b.x+b.w*.34,b.y+b.h*.135);ctx.lineTo(b.x+b.w*.46,b.y+b.h*.135);
+    ctx.moveTo(b.x+b.w*.54,b.y+b.h*.135);ctx.lineTo(b.x+b.w*.66,b.y+b.h*.135);ctx.stroke();
+
+    ctx.fillStyle="#7d5535";
+    ctx.font="italic "+Math.max(9,Math.min(13,b.w*.015))+"px Georgia,serif";
+    ctx.fillText("cut from paper, moved by light",b.x+b.w/2,b.y+b.h*.87);
+    ctx.font="10px Georgia,serif";
+    ctx.fillText("—  01  —",b.x+b.w/2,b.y+b.h*.925);
+  }
+
+  function drawCurtainPanel(x,y,w,h,left) {
+    const panel=ctx.createLinearGradient(x,y,x+w,y);
+    panel.addColorStop(0,"#57251f");panel.addColorStop(.25,"#8e3e33");
+    panel.addColorStop(.55,"#642922");panel.addColorStop(.83,"#9b4937");panel.addColorStop(1,"#4b211d");
+    ctx.fillStyle=panel;
+    ctx.beginPath();
+    if(left) {
+      ctx.moveTo(x,y);ctx.lineTo(x+w*.9,y+2);
+      ctx.bezierCurveTo(x+w*.62,y+h*.28,x+w*.94,y+h*.7,x+w*.54,y+h);
+      ctx.lineTo(x,y+h);ctx.closePath();
+    } else {
+      ctx.moveTo(x+w,y);ctx.lineTo(x+w*.1,y+2);
+      ctx.bezierCurveTo(x+w*.38,y+h*.28,x+w*.06,y+h*.7,x+w*.46,y+h);
+      ctx.lineTo(x+w,y+h);ctx.closePath();
+    }
+    ctx.fill();
+    ctx.globalAlpha=.42;
+    ctx.strokeStyle="#dfaa72";ctx.lineWidth=1;
+    for(let i=1;i<4;i++) {
+      const xx=left?x+w*i/4:x+w*(1-i/4);
+      ctx.beginPath();ctx.moveTo(xx,y+3);ctx.bezierCurveTo(xx-w*.12,y+h*.4,xx+w*.08,y+h*.72,xx-w*.04,y+h);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function drawCurtainValance(x,y,w,h) {
+    const g=ctx.createLinearGradient(0,y,0,y+h);
+    g.addColorStop(0,"#a64a3a");g.addColorStop(.5,"#773027");g.addColorStop(1,"#451d19");
+    ctx.fillStyle=g;
+    ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+w,y);
+    ctx.lineTo(x+w,y+h*.55);
+    for(let i=8;i>=0;i--) {
+      const xx=x+w*i/8;
+      ctx.quadraticCurveTo(xx-w/16,y+h*1.12,xx-w/8,y+h*.55);
+    }
+    ctx.lineTo(x,y);ctx.closePath();ctx.fill();
+    ctx.strokeStyle="#d0a26b";ctx.lineWidth=.7;ctx.globalAlpha=.72;
+    ctx.beginPath();ctx.moveTo(x,y+h*.55);
+    for(let i=8;i>=0;i--){const xx=x+w*i/8;ctx.quadraticCurveTo(xx-w/16,y+h*1.12,xx-w/8,y+h*.55);}
+    ctx.stroke();ctx.globalAlpha=1;
+  }
+
+  function drawStageWindow(now) {
+    const f=screenFrame,s=screen;
+    ctx.save();
+    ctx.shadowColor="rgba(20,8,4,.72)";ctx.shadowBlur=7;ctx.shadowOffsetY=4;
+    roundRectPath(ctx,f.x,f.y,f.w,f.h,3);ctx.fillStyle="#6d432d";ctx.fill();
+    ctx.restore();
+    roundRectPath(ctx,f.x,f.y,f.w,f.h,3);ctx.strokeStyle="#d4ad70";ctx.lineWidth=1.2;ctx.stroke();
+    roundRectPath(ctx,f.x+3,f.y+3,f.w-6,f.h-6,2);ctx.strokeStyle="#3a241c";ctx.lineWidth=2;ctx.stroke();
+
+    const dark=ctx.createLinearGradient(s.x,s.y,s.x+s.w,s.y+s.h);
+    dark.addColorStop(0,"#1e1714");dark.addColorStop(.5,"#080707");dark.addColorStop(1,"#211410");
+    ctx.fillStyle=dark;ctx.fillRect(s.x,s.y,s.w,s.h);
+    for(const m of stageFibers) {
+      const xx=s.x+m.x*s.w,yy=s.y+m.y*s.h;
+      ctx.globalAlpha=m.a*.20;
+      ctx.strokeStyle=m.tone?"#9c7851":"#080605";
+      ctx.lineWidth=.55;ctx.beginPath();ctx.moveTo(xx,yy);ctx.lineTo(xx+m.w*s.w,yy+m.dy);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+
+    if(processedReady) {
+      const flutterX=Math.sin(now*.0022)*.45;
+      const flutterY=Math.sin(now*.0017+.7)*.3;
+      ctx.save();
+      ctx.shadowColor="rgba(0,0,0,.95)";ctx.shadowBlur=3;
+      ctx.shadowOffsetX=1.5+flutterX;ctx.shadowOffsetY=2.2+flutterY;
+      ctx.drawImage(cutoutCanvas,s.x,s.y,s.w,s.h);
+      ctx.restore();
+      ctx.drawImage(cutoutCanvas,s.x,s.y,s.w,s.h);
+    }
+
+    const cw=Math.min(s.w*.055,26);
+    drawCurtainPanel(s.x,s.y,cw,s.h,true);
+    drawCurtainPanel(s.x+s.w-cw,s.y,cw,s.h,false);
+    drawCurtainValance(s.x,s.y,s.w,Math.min(20,s.h*.075));
+    for(const p of [[f.x+5,f.y+5],[f.x+f.w-5,f.y+5],[f.x+5,f.y+f.h-5],[f.x+f.w-5,f.y+f.h-5]]) {
+      ctx.beginPath();ctx.arc(p[0],p[1],1.7,0,Math.PI*2);ctx.fillStyle="#e3bf7c";ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawAppleEmblem(cx,cy,size,alpha=1) {
+    ctx.save();ctx.translate(cx,cy);ctx.scale(size/100,size/100);ctx.globalAlpha=alpha;
+    ctx.beginPath();
+    ctx.moveTo(0,-13);
+    ctx.bezierCurveTo(-10,-29,-31,-24,-35,-5);
+    ctx.bezierCurveTo(-42,18,-25,43,-9,48);
+    ctx.bezierCurveTo(-2,50,0,44,4,44);
+    ctx.bezierCurveTo(10,43,14,50,22,45);
+    ctx.bezierCurveTo(40,34,47,9,37,-10);
+    ctx.bezierCurveTo(28,-27,11,-27,2,-15);
+    ctx.bezierCurveTo(1,-14,0,-13,0,-13);ctx.closePath();
+    ctx.fillStyle="#9a4935";ctx.fill();
+    ctx.strokeStyle="#d7ae74";ctx.lineWidth=1.3;ctx.stroke();
+    ctx.beginPath();ctx.moveTo(2,-18);ctx.quadraticCurveTo(3,-31,11,-39);
+    ctx.strokeStyle="#70422a";ctx.lineWidth=4;ctx.stroke();
+    ctx.beginPath();ctx.moveTo(9,-29);ctx.bezierCurveTo(19,-44,34,-40,35,-31);
+    ctx.bezierCurveTo(27,-22,16,-23,9,-29);ctx.fillStyle="#657447";ctx.fill();
+    ctx.strokeStyle="#a0a96a";ctx.lineWidth=1;ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawCoverPanel(x,y,w,h,isLeft,alpha=1) {
+    ctx.save();ctx.globalAlpha=alpha;
+    ctx.shadowColor="rgba(0,0,0,.38)";ctx.shadowBlur=9;ctx.shadowOffsetY=5;
+    roundRectPath(ctx,x,y,w,h,Math.min(9,w*.025));ctx.fillStyle="#66382b";ctx.fill();ctx.restore();
+    roundRectPath(ctx,x,y,w,h,Math.min(9,w*.025));
+    const cover=ctx.createLinearGradient(x,y,x+w,y+h);
+    cover.addColorStop(0,"#814838");cover.addColorStop(.35,"#5a3027");cover.addColorStop(1,"#3a201d");
+    ctx.save();ctx.globalAlpha=alpha;ctx.fillStyle=cover;ctx.fill();
+    ctx.strokeStyle="#d0a96e";ctx.lineWidth=1.3;ctx.stroke();
+    roundRectPath(ctx,x+5,y+5,w-10,h-10,4);ctx.strokeStyle="rgba(225,192,133,.55)";ctx.lineWidth=.75;ctx.stroke();
+    ctx.strokeStyle="rgba(224,184,125,.15)";ctx.lineWidth=.55;
+    for(let i=0;i<Math.floor(w/14);i++) {
+      const xx=x+9+i*14;
+      ctx.beginPath();ctx.moveTo(xx,y+12);ctx.lineTo(xx+Math.min(12,w*.03),y+h-12);ctx.stroke();
+    }
+    if(isLeft) {
+      ctx.strokeStyle="#d0a96e";ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(x+w-4,y+8);ctx.lineTo(x+w-4,y+h-8);ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawClosedBook() {
+    const b=book;
+    drawBookBase();
+    drawCoverPanel(b.x+4,b.y+4,b.w/2,b.h-8,true);
+    drawCoverPanel(b.x+b.w/2-2,b.y+4,b.w/2-2,b.h-8,false);
+    ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillStyle="#e7c995";ctx.font="italic "+Math.max(28,Math.min(54,b.w*.105))+"px Georgia,serif";
+    ctx.fillText("Bad Apple",b.x+b.w/2,b.y+b.h*.25);
+    drawAppleEmblem(b.x+b.w/2,b.y+b.h*.49,Math.min(105,b.h*.36),.94);
+    ctx.strokeStyle="#d6ae72";ctx.lineWidth=.8;
+    ctx.beginPath();ctx.moveTo(b.x+b.w*.22,b.y+b.h*.69);ctx.lineTo(b.x+b.w*.40,b.y+b.h*.69);
+    ctx.moveTo(b.x+b.w*.60,b.y+b.h*.69);ctx.lineTo(b.x+b.w*.78,b.y+b.h*.69);ctx.stroke();
+    ctx.fillStyle="#d9b981";ctx.font="italic "+Math.max(10,Math.min(15,b.w*.022))+"px Georgia,serif";
+    ctx.fillText("A paper shadow theatre",b.x+b.w/2,b.y+b.h*.76);
+    ctx.fillStyle="#bc9161";ctx.font="9px Georgia,serif";
+    ctx.fillText("OPEN THE BOOK",b.x+b.w/2,b.y+b.h*.89);
+  }
+
+  function drawOpeningConfetti(now) {
+    const p=clamp((now-openedAt)/OPEN_MS,0,1);
+    const b=book,cx=b.x+b.w/2,cy=b.y+b.h*.48;
+    for(const piece of confetti) {
+      const t=p*1.6;
+      const x=cx+piece.x*b.w+piece.vx*t*b.w*.65;
+      const y=cy+piece.y*b.h+piece.vy*t*b.h+(.5*t*t)*piece.seed*b.h;
+      if(x<-30||x>window.innerWidth+30||y<-30||y>window.innerHeight+30) continue;
+      ctx.save();ctx.translate(x,y);ctx.rotate(piece.rotation+piece.spin*p);
+      ctx.globalAlpha=(1-p)*.92;ctx.fillStyle=piece.color;
+      ctx.beginPath();ctx.moveTo(-piece.size*piece.aspect/2,-piece.size/2);
+      ctx.lineTo(piece.size*piece.aspect*.28,-piece.size*.6);
+      ctx.lineTo(piece.size*piece.aspect/2,piece.size*.3);
+      ctx.lineTo(-piece.size*piece.aspect*.15,piece.size/2);ctx.closePath();ctx.fill();
+      ctx.strokeStyle="rgba(78,43,29,.38)";ctx.lineWidth=.5;ctx.stroke();
+      ctx.restore();
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function processVideoFrame(now) {
+    if(video.readyState<2||!video.videoWidth||!video.videoHeight||!outputImage) return;
+    if(now-lastSampleAt<UPDATE_MS) return;
+    lastSampleAt=now;
+    try {
+      videoSampleCtx.drawImage(video,0,0,sampleW,sampleH);
+      const src=videoSampleCtx.getImageData(0,0,sampleW,sampleH).data;
+      const dst=outputImage.data;
+      for(let y=0;y<sampleH;y++) {
+        for(let x=0;x<sampleW;x++) {
+          const i=(y*sampleW+x)*4;
+          const lum=src[i]*.2126+src[i+1]*.7152+src[i+2]*.0722;
+          let t=clamp((lum-29)/82,0,1);
+          t=t*t*(3-2*t);
+          const grain=((x*13+y*7+(x*y)%19)%9)-4;
+          dst[i]=clamp(235+grain,0,255);
+          dst[i+1]=clamp(218+grain,0,255);
+          dst[i+2]=clamp(181+grain,0,255);
+          dst[i+3]=Math.round(t*255);
+        }
+      }
+      cutoutCtx.putImageData(outputImage,0,0);
+      processedReady=true;
+    } catch(err) {
+      console.warn("Video frame could not be processed.",err);
+    }
+  }
+
+  function drawScene(now) {
+    drawOutside(now);
+    drawOpenPages();
+    drawStageWindow(now);
+  }
+
+  function tick(now) {
+    if(state==="closed") {
+      drawOutside(now);
+      drawClosedBook();
+      const b=book;
+      ctx.textAlign="center";ctx.textBaseline="middle";
+      ctx.fillStyle="rgba(246,224,183,.88)";
+      ctx.font="italic 12px Georgia,serif";
+      ctx.fillText("tap anywhere to turn the first page",window.innerWidth/2,Math.min(window.innerHeight-29,b.y+b.h+29));
+    } else {
+      processVideoFrame(now);
+      drawScene(now);
+      if(state==="opening") {
+        const raw=clamp((now-openedAt)/OPEN_MS,0,1);
+        const e=easeInOut(raw);
+        const b=book,half=b.w/2,opacity=1-e;
+        drawCoverPanel(b.x-e*half*.59,b.y+4,half+2,b.h-8,true,opacity);
+        drawCoverPanel(b.x+half-2+e*half*.59,b.y+4,half+2,b.h-8,false,opacity);
+        if(raw<.72) {
+          ctx.save();ctx.globalAlpha=1-raw/.72;
+          drawAppleEmblem(b.x+half,b.y+b.h*.49,Math.min(105,b.h*.36),1);
+          ctx.restore();
+        }
+        drawOpeningConfetti(now);
+        if(raw>=1) {
+          state="playing";
+          if(audioContext&&audioGain) {
+            audioContext.resume().catch(()=>{});
+            audioGain.gain.cancelScheduledValues(audioContext.currentTime);
+            audioGain.gain.setTargetAtTime(1,audioContext.currentTime,.12);
+          }
+        }
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function begin() {
+    if(state!=="closed") return;
+    state="opening";
+    openedAt=performance.now();
+    try {
+      const AudioCtx=window.AudioContext||window.webkitAudioContext;
+      if(AudioCtx) {
+        audioContext=new AudioCtx();
+        audioGain=audioContext.createGain();
+        audioGain.gain.value=0;
+        audioSource=audioContext.createMediaElementSource(video);
+        audioSource.connect(audioGain);audioGain.connect(audioContext.destination);
+        audioContext.resume().catch(()=>{});
+        video.muted=false;video.volume=1;
+      } else {
+        video.muted=false;video.volume=1;
+      }
+    } catch(_) {
+      video.muted=false;video.volume=1;
+    }
+    const promise=video.play();
+    if(promise&&promise.catch) promise.catch(()=>{});
+  }
+
+  video.addEventListener("loadedmetadata",()=>{
+    videoAspect=video.videoWidth/video.videoHeight||4/3;
+    resize();
+  });
+  video.addEventListener("error",()=>{errorBox.style.display="block";});
+  document.addEventListener("pointerdown",begin,{passive:true});
+  window.addEventListener("resize",resize);
+
+  videoAspect=video.videoWidth&&video.videoHeight?video.videoWidth/video.videoHeight:4/3;
+  resize();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
