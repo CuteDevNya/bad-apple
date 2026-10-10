@@ -4,58 +4,49 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#050505">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <title>Bad Apple — Zufallsseite</title>
   <style>
     html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#050505; }
-    #page { display:block; width:100%; height:100%; border:0; }
+    #page { display:block; width:100%; height:100%; border:0; background:#050505; }
   </style>
 </head>
 <body>
   <iframe id="page" title="Zufällige Bad Apple Seite" allow="autoplay; fullscreen" allowfullscreen></iframe>
 <script>
-(async () => {
-  const fallbackPages = ["badapple-elements.html", "badapple-fragment-bloom.html"];
+(() => {
+  "use strict";
+  const pages = [
+    "badapple-elements.html",
+    "badapple-fragment-bloom.html"
+  ];
   const frame = document.getElementById("page");
+  const storageKey = "badAppleLastPageV2";
 
-  function loadPage(path) {
-    // Den Index im Browser geöffnet lassen, damit Neuladen erneut auswählt.
-    frame.src = path.split("/").map(encodeURIComponent).join("/");
+  function getPrevious() {
+    try {
+      return sessionStorage.getItem(storageKey) ||
+             localStorage.getItem(storageKey) || "";
+    } catch (_) {
+      try { return localStorage.getItem(storageKey) || ""; } catch (_) { return ""; }
+    }
   }
 
-  try {
-    const response = await fetch(
-      "https://api.github.com/repos/CuteDevNya/bad-apple/git/trees/main?recursive=1",
-      { headers: { Accept: "application/vnd.github+json" }, cache: "no-store" }
-    );
-    if (!response.ok) throw new Error("GitHub API antwortete mit " + response.status);
-
-    const result = await response.json();
-    const pages = (result.tree || [])
-      .filter(item =>
-        item.type === "blob" &&
-        /\.html?$/i.test(item.path) &&
-        item.path.toLowerCase() !== "index.html"
-      )
-      .map(item => item.path);
-
-    if (!pages.length) throw new Error("Keine auswählbaren HTML-Seiten gefunden");
-
-    pickAndLoad(pages);
-  } catch (error) {
-    // Auch bei API-Ausfall bleibt die Auswahl zufällig statt immer die alte Seite zu öffnen.
-    pickAndLoad(fallbackPages);
+  function remember(path) {
+    try { sessionStorage.setItem(storageKey, path); } catch (_) {}
+    try { localStorage.setItem(storageKey, path); } catch (_) {}
   }
 
-  function pickAndLoad(pages) {
-    // Beim Neuladen möglichst nicht zweimal dieselbe Variante hintereinander wählen.
-    let previous = "";
-    try { previous = sessionStorage.getItem("badAppleLastPage") || ""; } catch (_) {}
-    let choices = pages.length > 1 ? pages.filter(path => path !== previous) : pages;
-    if (!choices.length) choices = pages;
-    const selectedPage = choices[Math.floor(Math.random() * choices.length)];
-    try { sessionStorage.setItem("badAppleLastPage", selectedPage); } catch (_) {}
-    loadPage(selectedPage);
-  }
+  // Two live variants: avoid repeating the same page on consecutive reloads.
+  const previous = getPrevious();
+  let candidates = pages.filter(path => path !== previous);
+  if (!candidates.length) candidates = pages;
+  const selected = candidates[Math.floor(Math.random() * candidates.length)];
+  remember(selected);
+
+  // Keep the address on index.html and bypass a stale cached iframe document.
+  const url = selected.split("/").map(encodeURIComponent).join("/");
+  frame.src = url + "?refresh=" + Date.now();
 })();
 </script>
 </body>
