@@ -14,7 +14,7 @@
   <iframe id="page" title="Zufällige Bad Apple Seite" allow="autoplay; fullscreen" allowfullscreen></iframe>
 <script>
 (async () => {
-  const fallbackPage = "badapple-elements.html";
+  const fallbackPages = ["badapple-elements.html", "badapple-fragment-bloom.html"];
   const frame = document.getElementById("page");
 
   function loadPage(path) {
@@ -40,7 +40,14 @@
 
     if (!pages.length) throw new Error("Keine auswählbaren HTML-Seiten gefunden");
 
-    // Beim Neuladen eine andere Variante wählen, wenn mehrere existieren.
+    pickAndLoad(pages);
+  } catch (error) {
+    // Auch bei API-Ausfall bleibt die Auswahl zufällig statt immer die alte Seite zu öffnen.
+    pickAndLoad(fallbackPages);
+  }
+
+  function pickAndLoad(pages) {
+    // Beim Neuladen möglichst nicht zweimal dieselbe Variante hintereinander wählen.
     let previous = "";
     try { previous = sessionStorage.getItem("badAppleLastPage") || ""; } catch (_) {}
     let choices = pages.length > 1 ? pages.filter(path => path !== previous) : pages;
@@ -48,8 +55,6 @@
     const selectedPage = choices[Math.floor(Math.random() * choices.length)];
     try { sessionStorage.setItem("badAppleLastPage", selectedPage); } catch (_) {}
     loadPage(selectedPage);
-  } catch (error) {
-    loadPage(fallbackPage);
   }
 })();
 </script>
