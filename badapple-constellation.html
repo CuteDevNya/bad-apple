@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>Bad Apple — Constellation</title>
+<style>
+  * { box-sizing:border-box; }
+  html,body { width:100%;height:100%;margin:0;overflow:hidden;background:#000; }
+  body { position:fixed;inset:0;color:#fff;user-select:none;-webkit-user-select:none;touch-action:manipulation;cursor:pointer; }
+  #stage { position:absolute;inset:0;display:grid;place-items:center;overflow:hidden;background:#000; }
+  #frame { position:relative;flex:none;overflow:hidden;background:#000;isolation:isolate; }
+  #video { position:fixed;width:1px;height:1px;left:-20px;top:-20px;opacity:0;pointer-events:none; }
+  .fragment {
+    position:absolute;display:flex;align-items:center;justify-content:center;
+    min-width:0;min-height:0;overflow:hidden;white-space:nowrap;line-height:1;
+    transform-origin:center center;
+    transform:translate(-50%,-50%) translate(var(--from-x),var(--from-y)) rotate(var(--spin-start)) scale(var(--scale-start));
+    transition:transform 1280ms cubic-bezier(.16,.82,.2,1), opacity 100ms linear;
+    will-change:transform,opacity;pointer-events:none;contain:layout style paint;
+    border:1px solid var(--edge);border-radius:var(--radius);
+    background:var(--paint);color:var(--ink);
+    font-family:var(--font);font-size:var(--font-size);font-weight:var(--weight);
+    text-shadow:var(--shadow);box-shadow:var(--glow);
+    clip-path:var(--cut,none);
+  }
+  #frame.dispersed .fragment {
+    transform:translate(-50%,-50%) rotate(var(--spin-end)) scale(var(--scale-end));
+  }
+  .fragment.glyph { background:transparent;border-color:transparent;box-shadow:none; }
+  .fragment.ring { background:transparent;border-width:2px;border-radius:50%; }
+  .fragment.shard { clip-path:polygon(4% 12%,96% 0,72% 100%,0 72%);border-radius:0; }
+  .fragment.cross { background:transparent;border:0;box-shadow:none; }
+  .fragment.cross::before,.fragment.cross::after { content:"";position:absolute;background:var(--paint);border-radius:9px; }
+  .fragment.cross::before { width:100%;height:22%;top:39%;left:0; }
+  .fragment.cross::after { width:22%;height:100%;left:39%;top:0; }
+  .fragment.spark { background:var(--paint);border:0;border-radius:0;clip-path:polygon(50% 0,61% 37%,100% 50%,61% 63%,50% 100%,39% 63%,0 50%,39% 37%); }
+  .fragment.pill { border-radius:999px; }
+  #frame.playing .fragment {
+    color:#fff!important;border-color:#fff!important;box-shadow:none!important;text-shadow:none!important;
+  }
+  #frame.playing .fragment:not(.glyph):not(.ring):not(.cross) { background:#fff!important; }
+  #frame.playing .fragment.glyph,#frame.playing .fragment.cross { background:transparent!important; }
+  #frame.playing .fragment.cross::before,#frame.playing .fragment.cross::after { background:#fff!important; }
+  #frame.playing .fragment.ring { background:transparent!important;border-color:#fff!important; }
+  @media (prefers-reduced-motion:reduce) {
+    .fragment { transition-duration:800ms; }
+  }
+</style>
+</head>
+<body>
+<main id="stage" aria-label="Bad Apple Constellation">
+  <div id="frame" aria-hidden="true"></div>
+  <video id="video" playsinline preload="auto" loop>
+    <source src="bad_apple.mp4" type="video/mp4">
+  </video>
+</main>
+<script>
+(() => {
+  "use strict";
+  const stage = document.getElementById("stage");
+  const frame = document.getElementById("frame");
+  const video = document.getElementById("video");
+  const sampleCanvas = document.createElement("canvas");
+  const sampleContext = sampleCanvas.getContext("2d", { willReadFrequently:true });
+  const appleCanvas = document.createElement("canvas");
+  appleCanvas.width = appleCanvas.height = 1000;
+  const appleContext = appleCanvas.getContext("2d");
+  const applePath = new Path2D("M500 242 C447 185 410 94 323 126 C222 78 116 135 77 271 C19 470 105 712 261 851 C350 930 431 898 500 863 C569 898 650 930 739 851 C895 712 981 470 923 271 C884 135 778 78 677 126 C590 94 553 185 500 242 Z");
+  applePath.addPath(new Path2D("M491 244 C477 183 492 129 535 80 L559 93 C523 151 518 197 527 244 Z"));
+  applePath.addPath(new Path2D("M528 145 C559 61 659 43 708 74 C679 151 598 183 528 145 Z"));
+
+  const palette = ["#f8fbff","#e2f5ff","#a9e8ff","#a4f5d2","#dbff75","#fff0b5","#f5d2ff","#ffffff","#b9c7ff","#ffcbb8"];
+  const glyphs = ["✦","✧","◇","◆","△","▽","＋","×","·","∗","◌","◦","/","\\","|","—","∴","♡","猫","夢","0","1","*","+","=","#","%","~"];
+  const classes = ["tile","tile","glyph","ring","shard","cross","spark","pill"];
+  const fonts = ["Arial,sans-serif","Georgia,serif","monospace","system-ui,sans-serif"];
+  let pieces = [];
+  let frameWidth = 1, frameHeight = 1, aspect = 4/3;
+  let sampleWidth = 0, sampleHeight = 0, pixelData = null;
+  let foregroundBright = true, polarityDetected = false;
+  let introReady = false, startRequested = false, dispersed = false;
+  let playbackStarted = false, awaitingPlayback = false, renderToken = 0;
+  let resizeTimer = 0;
+  let lastError = "";
+
+  const random = (min,max) => min + Math.random() * (max-min);
+  const choose = array => array[Math.floor(Math.random()*array.length)];
+  const clamp = (value,min,max) => Math.max(min,Math.min(max,value));
+
+  function resizeFrame() {
+    if (!video.videoWidth || !video.videoHeight) return;
+    aspect = video.videoWidth / video.videoHeight;
+    const availableWidth = Math.max(1,stage.clientWidth);
+    const availableHeight = Math.max(1,stage.clientHeight);
+    frameWidth = Math.max(1,Math.min(availableWidth,availableHeight*aspect));
+    frameHeight = frameWidth / aspect;
+    frame.style.width = frameWidth + "px";
+    frame.style.height = frameHeight + "px";
+    frame.style.aspectRatio = video.videoWidth + " / " + video.videoHeight;
+  }
+
+  function detectForeground(data) {
+    let dark = 0, bright = 0;
+    for (let i=0;i<data.length;i+=4) {
+      const l = data[i]*0.2126 + data[i+1]*0.7152 + data[i+2]*0.0722;
+      if (l < 128) dark++; else bright++;
+    }
+    foregroundBright = dark > bright;
+    polarityDetected = true;
+  }
+
+  function makePiece(point, cellWidth, cellHeight) {
+    const element = document.createElement("span");
+    const type = choose(classes);
+    element.className = "fragment " + type;
+    element.setAttribute("aria-hidden","true");
+    const w = cellWidth * random(0.48,1.25);
+    const h = cellHeight * random(0.48,1.25);
+    element.style.left = (point.x/frameWidth*100) + "%";
+    element.style.top = (point.y/frameHeight*100) + "%";
+    element.style.width = (w/frameWidth*100) + "%";
+    element.style.height = (h/frameHeight*100) + "%";
+    element.style.setProperty("--paint",choose(palette));
+    element.style.setProperty("--ink",Math.random()<0.32 ? "#101018" : "#ffffff");
+    element.style.setProperty("--edge",choose(palette)+"aa");
+    element.style.setProperty("--radius",type==="ring" ? "50%" : (Math.random()<0.6 ? random(0,5)+"px" : "1px"));
+    element.style.setProperty("--font",choose(fonts));
+    element.style.setProperty("--font-size",random(7,15)+"px");
+    element.style.setProperty("--weight",choose([500,650,800,900]));
+    element.style.setProperty("--shadow",Math.random()<0.14 ? "0 0 8px "+choose(palette)+"88" : "none");
+    element.style.setProperty("--glow",Math.random()<0.12 ? "0 0 5px "+choose(palette)+"66" : "none");
+    element.textContent = (type==="glyph" || (type==="tile" && Math.random()<0.24)) ? choose(glyphs) : "";
+    const appleX = point.appleX;
+    const appleY = point.appleY;
+    element.style.setProperty("--from-x",(appleX-point.x)+"px");
+    element.style.setProperty("--from-y",(appleY-point.y)+"px");
+    element.style.setProperty("--spin-start",random(-110,110)+"deg");
+    element.style.setProperty("--spin-end",random(-24,24)+"deg");
+    element.style.setProperty("--scale-start",random(0.55,1.25));
+    element.style.setProperty("--scale-end",random(0.68,1.17));
+    const opacity = random(0.72,0.98);
+    element.style.opacity = opacity;
+    frame.appendChild(element);
+    return { element, u:point.x/frameWidth, v:point.y/frameHeight, lastOpacity:opacity };
+  }
+
+  function createPositions(count, columns, rows, cellWidth, cellHeight) {
+    const points = [];
+    for (let row=0;row<rows && points.length<count;row++) {
+      for (let col=0;col<columns && points.length<count;col++) {
+        const x = (col+random(0.10,0.90))*cellWidth;
+        const y = (row+random(0.10,0.90))*cellHeight;
+        points.push({ x, y, appleX:0, appleY:0 });
+      }
+    }
+    let attempts = 0;
+    while (points.length<count && attempts<count*35) {
+      attempts++;
+      const nx = random(0.035,0.965);
+      const ny = random(0.035,0.965);
+      if (!appleContext.isPointInPath(applePath,nx*1000,ny*1000)) continue;
+      points.push({
+        x:frameWidth*nx,
+        y:frameHeight*ny,
+        appleX:0,
+        appleY:0
+      });
+    }
+    while (points.length<count) points.push({x:random(0,frameWidth),y:random(0,frameHeight),appleX:0,appleY:0});
+    const applePoints = [];
+    let appleAttempts = 0;
+    while (applePoints.length<count && appleAttempts<count*35) {
+      appleAttempts++;
+      const nx = random(0.025,0.975), ny = random(0.025,0.975);
+      if (appleContext.isPointInPath(applePath,nx*1000,ny*1000)) {
+        applePoints.push({
+          x:frameWidth*(0.5+(nx-0.5)*0.78),
+          y:frameHeight*(0.055+ny*0.89)
+        });
+      }
+    }
+    while (applePoints.length<count) applePoints.push({x:frameWidth*random(0.3,0.7),y:frameHeight*random(0.2,0.8)});
+    for (let i=0;i<count;i++) {
+      points[i].appleX = applePoints[i].x;
+      points[i].appleY = applePoints[i].y;
+    }
+    return points;
+  }
+
+  function buildApple() {
+    if (!video.videoWidth || startRequested) return;
+    resizeFrame();
+    const targetCount = clamp(Math.round(frameWidth*frameHeight/1400),560,1000);
+    const columns = Math.max(1,Math.round(Math.sqrt(targetCount*aspect)));
+    const rows = Math.ceil(targetCount/columns);
+    const cellWidth = frameWidth/columns;
+    const cellHeight = frameHeight/rows;
+    const points = createPositions(targetCount,columns,rows,cellWidth,cellHeight);
+    frame.replaceChildren();
+    pieces = points.map(point => makePiece(point,cellWidth,cellHeight));
+    introReady = true;
+    if (startRequested) beginExperience();
+  }
+
+  function disperse() {
+    if (!introReady || dispersed) return;
+    dispersed = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      frame.classList.add("dispersed");
+    }));
+    window.setTimeout(() => {
+      frame.classList.add("playing");
+      renderFrame();
+      if (playbackStarted && !video.paused) startRenderer();
+    },1300);
+  }
+
+  function startVideo() {
+    video.muted = false;
+    video.volume = 1;
+    let result;
+    try { result = video.play(); }
+    catch (error) { awaitingPlayback = true; return; }
+    if (result && typeof result.then === "function") {
+      result.then(() => {
+        playbackStarted = true;
+        awaitingPlayback = false;
+        if (frame.classList.contains("playing")) startRenderer();
+      }).catch(error => {
+        awaitingPlayback = true;
+        lastError = error && error.message ? error.message : "Playback was blocked";
+      });
+    }
+  }
+
+  function beginExperience() {
+    if (!introReady) return;
+    disperse();
+    if (!playbackStarted) startVideo();
+  }
+
+  function onInteraction() {
+    if (awaitingPlayback && dispersed) {
+      startVideo();
+      return;
+    }
+    if (startRequested) return;
+    startRequested = true;
+    beginExperience();
+  }
+  document.addEventListener("pointerdown",onInteraction,{passive:true});
+
+  function renderFrame() {
+    if (!frame.classList.contains("playing") ||
+        video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+        !video.videoWidth || !pieces.length || !sampleContext) return;
+    try {
+      // The sampling canvas uses the exact native source dimensions; no thumbnail resize.
+      sampleContext.drawImage(video,0,0,sampleWidth,sampleHeight);
+      pixelData = sampleContext.getImageData(0,0,sampleWidth,sampleHeight).data;
+      if (!polarityDetected) detectForeground(pixelData);
+      for (const piece of pieces) {
+        const sx = clamp(Math.floor(piece.u*(sampleWidth-1)),0,sampleWidth-1);
+        const sy = clamp(Math.floor(piece.v*(sampleHeight-1)),0,sampleHeight-1);
+        const offset = (sy*sampleWidth+sx)*4;
+        const l = pixelData[offset]*0.2126 + pixelData[offset+1]*0.7152 + pixelData[offset+2]*0.0722;
+        const foreground = foregroundBright ? l/255 : (255-l)/255;
+        const opacity = foreground < 0.12 ? 0 : clamp((foreground-0.12)*1.35,0,0.96);
+        if (Math.abs(opacity-piece.lastOpacity)>0.025) {
+          piece.element.style.opacity = opacity.toFixed(3);
+          piece.lastOpacity = opacity;
+        }
+      }
+    } catch (error) {
+      lastError = error && error.message ? error.message : "Could not sample frame";
+    }
+  }
+
+  function stopRenderer() { renderToken++; }
+  function startRenderer() {
+    stopRenderer();
+    const token = renderToken;
+    if (typeof video.requestVideoFrameCallback === "function") {
+      const next = () => {
+        if (token!==renderToken || video.paused || video.ended || !frame.classList.contains("playing")) return;
+        renderFrame();
+        video.requestVideoFrameCallback(next);
+      };
+      video.requestVideoFrameCallback(next);
+    } else {
+      const next = () => {
+        if (token!==renderToken || video.paused || video.ended || !frame.classList.contains("playing")) return;
+        renderFrame();
+        requestAnimationFrame(next);
+      };
+      requestAnimationFrame(next);
+    }
+  }
+
+  video.addEventListener("loadedmetadata",() => {
+    aspect = video.videoWidth/video.videoHeight || 4/3;
+    sampleWidth = video.videoWidth;
+    sampleHeight = video.videoHeight;
+    sampleCanvas.width = sampleWidth;
+    sampleCanvas.height = sampleHeight;
+    buildApple();
+  });
+  video.addEventListener("loadeddata",() => {
+    if (!polarityDetected && sampleWidth && sampleHeight) {
+      try {
+        sampleContext.drawImage(video,0,0,sampleWidth,sampleHeight);
+        detectForeground(sampleContext.getImageData(0,0,sampleWidth,sampleHeight).data);
+      } catch (_) {}
+    }
+    if (startRequested && !dispersed) beginExperience();
+  });
+  video.addEventListener("playing",() => {
+    playbackStarted = true;
+    awaitingPlayback = false;
+    if (frame.classList.contains("playing")) startRenderer();
+  });
+  video.addEventListener("pause",stopRenderer);
+  video.addEventListener("seeked",renderFrame);
+  video.addEventListener("error",() => {
+    console.error("Bad Apple video could not be loaded. Expected bad_apple.mp4 in the repository root.",lastError);
+  });
+  window.addEventListener("resize",() => {
+    if (startRequested) return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(buildApple,120);
+  });
+})();
+</script>
+</body>
+</html>
