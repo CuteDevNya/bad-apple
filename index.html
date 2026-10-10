@@ -18,14 +18,14 @@
   const pages = [
     "badapple-elements.html",
     "badapple-xp-popups.html",
-    "badapple-living-engraving.html"
+    "badapple-vinyl-grooves.html"
   ];
-  const key = "badAppleExperienceShuffleV5";
+  const key = "badAppleExperienceShuffleV6";
   const frame = document.getElementById("page");
   let previous = "";
   try { previous = localStorage.getItem(key) || ""; } catch (_) {}
 
-  // Select randomly from the original, XP-popup, and living-engraving experiences.
+  // Select randomly from the original, XP-popup and vinyl-groove experiences.
   // Prefer a different page than last time so the experiences take turns.
   let choices = pages.filter(path => path !== previous);
   if (!choices.length) choices = pages;
