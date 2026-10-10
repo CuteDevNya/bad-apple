@@ -84,9 +84,8 @@
   #intro-window .xp-message { font-size:12px;line-height:1.35; }
   #intro-window .xp-footer { height:43px;padding:5px 12px 9px; }
   #intro-window .xp-ok { width:76px;height:23px;font-size:11px; }
-  #popup-layer.burst .xp-window { opacity:1; }
   #popup-layer.morph .xp-window { transition:left 820ms cubic-bezier(.16,.88,.23,1),top 820ms cubic-bezier(.16,.88,.23,1),width 820ms cubic-bezier(.16,.88,.23,1),height 820ms cubic-bezier(.16,.88,.23,1),opacity 520ms ease; }
-  #popup-layer.playing .xp-window { transition:left 105ms linear,top 105ms linear,width 105ms linear,height 105ms linear,opacity 120ms linear; }
+  #popup-layer.playing .xp-window { transition:none !important; }
   @media(max-width:420px) {
     #intro-window { height:178px; }
     #intro-window .xp-body { gap:9px;padding:12px 9px 7px; }
@@ -128,6 +127,8 @@
   const THRESHOLD = 127;
   const MORPH_HOLD_MS = 1000;
   const MORPH_MS = 840;
+  const POPUP_STAGGER_MS = 12;
+  const POPUP_FADE_MS = 70;
 
   const titles = [
     "BadApple.exe - Anwendungsfehler",
@@ -278,14 +279,18 @@
       windows.push(win);
     }
     layer.appendChild(frag);
-    // Commit the scattered geometry before fading all of the error windows in.
+    // Commit all scattered positions, then reveal the errors one by one like popup spam.
     void layer.offsetWidth;
     requestAnimationFrame(() => {
-      for(const win of windows) {
-        win.style.transition = "";
-        win.style.opacity = "1";
-      }
+      windows.forEach((win,index) => {
+        window.setTimeout(() => {
+          if(state !== "burst") return;
+          win.style.transition = "opacity " + POPUP_FADE_MS + "ms ease";
+          win.style.opacity = "1";
+        }, index * POPUP_STAGGER_MS);
+      });
     });
+    return (MAX_WINDOWS - 1) * POPUP_STAGGER_MS + POPUP_FADE_MS + 20;
   }
 
   function captureFrame() {
@@ -443,8 +448,9 @@
     return mergeRects(result);
   }
 
-  function makeTiles(rgba) {
+  function makeTiles(rgba, windowLimit = MAX_WINDOWS) {
     if(!sourceW||!sourceH||!rgba) return [];
+    windowLimit = Math.max(1,Math.min(MAX_WINDOWS,windowLimit));
     frameRect=getFrameRect();
     let gw=Math.max(8,Math.ceil(frameRect.w/CELL_FACTOR));
     let gh=Math.max(8,Math.ceil(frameRect.h/CELL_FACTOR));
@@ -452,8 +458,8 @@
     let w=gw,h=gh,working=base,rects=[];
     for(let attempt=0;attempt<26;attempt++) {
       rects=partitionMask(working,w,h);
-      if(rects.length<=MAX_WINDOWS) break;
-      const ratio=Math.sqrt(MAX_WINDOWS/Math.max(1,rects.length))*0.90;
+      if(rects.length<=windowLimit) break;
+      const ratio=Math.sqrt(windowLimit/Math.max(1,rects.length))*0.90;
       let nw=Math.max(5,Math.min(w-1,Math.floor(w*ratio)));
       let nh=Math.max(5,Math.min(h-1,Math.floor(h*ratio)));
       if(nw===w&&nh===h) {
@@ -465,7 +471,7 @@
       working=downsampleMask(base,gw,gh,w,h);
     }
     rects.sort((a,b)=>a.y0-b.y0||a.x0-b.x0);
-    return rects.slice(0,MAX_WINDOWS).map(r=>({
+    return rects.slice(0,windowLimit).map(r=>({
       x:frameRect.x+r.x0/w*frameRect.w,
       y:frameRect.y+r.y0/h*frameRect.h,
       w:(r.x1-r.x0)/w*frameRect.w,
@@ -515,10 +521,12 @@
     state="burst";
     startedByGesture=true;
     intro.classList.add("dismiss");
-    makePopupBurst();
+    const popupRevealDuration = makePopupBurst();
     prepareAudioFromGesture();
-    // Preserve a full second of scattered error windows before moving them.
-    startTimer=window.setTimeout(startMorph,MORPH_HOLD_MS);
+    // Start the one-second pause after the final error popup has appeared.
+    startTimer=window.setTimeout(() => {
+      startTimer=window.setTimeout(startMorph,MORPH_HOLD_MS);
+    }, popupRevealDuration);
   }
 
   function setWindowRect(win,rect,visible) {
@@ -532,6 +540,18 @@
     }
   }
 
+  function ensureWindowCount(count) {
+    const W=window.innerWidth,H=window.innerHeight;
+    while(windows.length<count && windows.length<MAX_WINDOWS) {
+      const win=createXpWindow(windows.length);
+      win.style.transition="none";
+      win.style.opacity="0";
+      styleWindowForRect(win,W/2,H/2,2,2);
+      layer.appendChild(win);
+      windows.push(win);
+    }
+  }
+
   function startMorph() {
     if(state!=="burst" && state!=="waiting-frame") return;
     if(!firstTiles) {
@@ -542,16 +562,42 @@
     state="morph";
     layer.classList.remove("burst");
     layer.classList.add("morph");
-    for(let i=0;i<windows.length;i++) setWindowRect(windows[i],firstTiles[i],i<firstTiles.length);
-    morphTimer=window.setTimeout(startMovie,MORPH_MS);
+    const targetCount = firstTiles.length;
+    const collapseTarget = {
+      x:window.innerWidth/2,
+      y:window.innerHeight/2,
+      w:2,
+      h:2
+    };
+    for(let i=0;i<windows.length;i++) {
+      const targetIndex = targetCount ? i % targetCount : 0;
+      const target = targetCount ? firstTiles[targetIndex] : collapseTarget;
+
+      // Excess windows land exactly on a real target and share its contents;
+      // after they overlap, startMovie removes the redundant copies.
+      if(targetCount && i >= targetCount) {
+        windows[i].innerHTML = windows[targetIndex].innerHTML;
+      }
+      windows[i].style.transition = "";
+      setWindowRect(windows[i],target,true);
+    }
+    morphTimer=window.setTimeout(startMovie,MORPH_MS + 20);
   }
 
   function startMovie() {
     if(state!=="morph"&&state!=="waiting-frame") return;
     if(!firstTiles) return;
+    // Keep only the windows needed by the first frame. The extras have already
+    // travelled to identical rectangles and visually overlap before being removed.
+    const neededCount = firstTiles.length;
+    if(windows.length > neededCount) {
+      for(const extra of windows.slice(neededCount)) extra.remove();
+      windows = windows.slice(0,neededCount);
+    }
     state="playing";
     layer.classList.remove("morph");
     layer.classList.add("playing");
+    for(const win of windows) win.style.transition = "none";
     try {
       video.pause();
       video.currentTime=0;
@@ -606,8 +652,15 @@
     try {
       c.drawImage(video,0,0,sourceW,sourceH);
       const data=c.getImageData(0,0,sourceW,sourceH).data;
-      const tiles=makeTiles(data);
-      for(let i=0;i<windows.length;i++) setWindowRect(windows[i],tiles[i],i<tiles.length);
+      let tiles=makeTiles(data,MAX_WINDOWS);
+      if(!tiles.length) return;
+      ensureWindowCount(tiles.length);
+      if(tiles.length>windows.length) tiles=makeTiles(data,windows.length);
+      for(let i=0;i<windows.length;i++) {
+        // If a frame needs fewer rectangles, the surplus windows stack exactly
+        // on existing targets instead of shrinking toward the screen centre.
+        setWindowRect(windows[i],tiles[i % tiles.length],true);
+      }
     } catch(error) {
       console.error("Could not update popup layout.",error);
     } finally {
