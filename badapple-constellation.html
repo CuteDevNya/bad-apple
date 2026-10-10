@@ -4,37 +4,41 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="theme-color" content="#000000">
-<title>Bad Apple — Afterimage</title>
+<title>Bad Apple — Signal Loom</title>
 <style>
   * { box-sizing:border-box; }
   html,body { width:100%;height:100%;margin:0;overflow:hidden;background:#000; }
   body { position:fixed;inset:0;touch-action:manipulation;user-select:none;-webkit-user-select:none; }
-  #screen { position:absolute;inset:0;width:100%;height:100%;display:block;background:#000; }
-  #video { position:fixed;width:1px;height:1px;left:-20px;top:-20px;opacity:0;pointer-events:none; }
+  canvas { position:absolute;inset:0;width:100%;height:100%;display:block;background:#000; }
+  video { position:fixed;width:1px;height:1px;left:-24px;top:-24px;opacity:0;pointer-events:none; }
 </style>
 </head>
 <body>
-<canvas id="screen" aria-label="Bad Apple Afterimage"></canvas>
-<video id="video" playsinline preload="auto" loop>
+<canvas id="loom" aria-label="Bad Apple Signal Loom"></canvas>
+<video id="source" playsinline preload="auto" loop>
   <source src="bad_apple.mp4" type="video/mp4">
 </video>
 <script>
 (() => {
   "use strict";
-  const canvas = document.getElementById("screen");
+  const canvas = document.getElementById("loom");
   const ctx = canvas.getContext("2d", {alpha:false});
-  const video = document.getElementById("video");
-  const sampler = document.createElement("canvas");
-  const sampleCtx = sampler.getContext("2d", {willReadFrequently:true});
-  let W=1,H=1,dpr=1,sourceW=0,sourceH=0;
-  let state="idle",startedAt=0,clickX=0,clickY=0,particles=[],targetParticles=[];
-  let sourceReady=false,targetsReady=false,playRequested=false,playBlocked=false;
-  let sourcePixels=null,sourceAspect=4/3,lastRandomGlitch=0,glitchUntil=0;
-  let resizeAgain=false;
-  const rnd=(a,b)=>a+Math.random()*(b-a);
+  const video = document.getElementById("source");
+  const sample = document.createElement("canvas");
+  const sampleCtx = sample.getContext("2d", {willReadFrequently:true});
+
+  let W=1,H=1,dpr=1,sourceW=0,sourceH=0,aspect=4/3;
+  let rect={x:0,y:0,w:1,h:1};
+  let state="waiting",startAt=0,startedAt=0,origin={x:0,y:0};
+  let motes=[],loomPoints=[],firstLuma=null,currentLuma=null;
+  let columns=170,rows=58,playPromise=null,playBlocked=false,firstFrameReady=false;
+  let resizePending=false,lastDraw=0,randomSeed=0;
+  const TAU=Math.PI*2;
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-  const easeOut=t=>1-Math.pow(1-t,3);
-  const easeInOut=t=>t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+  const mix=(a,b,t)=>a+(b-a)*t;
+  const smooth=t=>t*t*(3-2*t);
+  const ease=t=>1-Math.pow(1-t,3);
+  const random=(a,b)=>a+Math.random()*(b-a);
 
   function resize() {
     dpr=Math.min(window.devicePixelRatio||1,2);
@@ -42,330 +46,357 @@
     canvas.width=Math.max(1,Math.round(W*dpr));
     canvas.height=Math.max(1,Math.round(H*dpr));
     ctx.setTransform(dpr,0,0,dpr,0,0);
-    if(state==="idle") makeIdleParticles();
+    if(sourceW&&sourceH) setFrameRect();
+    if(state==="waiting") createMotes();
   }
 
-  function frameRect() {
-    const aw=W, ah=H, ar=sourceAspect||4/3;
-    const width=Math.min(aw,ah*ar), height=width/ar;
-    return {x:(W-width)/2,y:(H-height)/2,w:width,h:height};
+  function setFrameRect() {
+    aspect=sourceW&&sourceH?sourceW/sourceH:4/3;
+    const w=Math.min(W,H*aspect),h=w/aspect;
+    rect={x:(W-w)/2,y:(H-h)/2,w,h};
   }
 
-  function makeIdleParticles() {
-    if(state!=="idle") return;
-    const count=Math.round(clamp(W*H/1250,420,960));
-    particles=[];
+  function createMotes() {
+    const count=Math.round(clamp(W*H/1200,480,1100));
+    motes=[];
     for(let i=0;i<count;i++) {
-      const angle=rnd(0,Math.PI*2), ring=rnd(0.05,0.48);
-      particles.push({
-        x:W*(0.5+Math.cos(angle)*ring),
-        y:H*(0.5+Math.sin(angle)*ring),
-        fromX:0,fromY:0,toX:0,toY:0,
-        size:rnd(0.35,1.7),phase:rnd(0,Math.PI*2),speed:rnd(0.3,1.7),
-        orbit:rnd(3,20),direction:Math.random()<0.5?-1:1,
-        alpha:rnd(0.16,0.9),hue:Math.random()<0.2
+      const angle=random(0,TAU),r=random(0.035,0.46)*Math.min(W,H);
+      motes.push({
+        x:W/2+Math.cos(angle)*r,y:H/2+Math.sin(angle)*r*0.72,
+        angle,r,
+        radius:random(0.35,1.55),
+        phase:random(0,TAU),
+        speed:random(0.18,1.25),
+        drift:random(2,19),
+        alpha:random(0.18,0.9),
+        cool:Math.random()<0.23
       });
     }
   }
 
-  function prepareNativeFrame() {
+  function captureNativeFrame() {
     if(!video.videoWidth||!video.videoHeight) return false;
-    sourceW=video.videoWidth; sourceH=video.videoHeight; sourceAspect=sourceW/sourceH;
-    sampler.width=sourceW; sampler.height=sourceH;
+    sourceW=video.videoWidth;sourceH=video.videoHeight;aspect=sourceW/sourceH;
+    sample.width=sourceW;sample.height=sourceH;
+    setFrameRect();
     try {
       sampleCtx.drawImage(video,0,0,sourceW,sourceH);
-      sourcePixels=sampleCtx.getImageData(0,0,sourceW,sourceH).data;
-      sourceReady=true;
-      makeTargets();
+      const image=sampleCtx.getImageData(0,0,sourceW,sourceH).data;
+      firstLuma=new Uint8Array(sourceW*sourceH);
+      for(let i=0,j=0;i<image.length;i+=4,j++) {
+        firstLuma[j]=Math.round(image[i]*0.2126+image[i+1]*0.7152+image[i+2]*0.0722);
+      }
+      currentLuma=firstLuma;
+      firstFrameReady=true;
+      buildLoomPoints(firstLuma);
       return true;
-    } catch(e) {
-      sourceReady=false;
+    } catch(error) {
+      console.error("Could not sample source frame",error);
       return false;
     }
   }
 
-  function makeTargets() {
-    if(!sourcePixels||!sourceW||!sourceH) return;
-    const rect=frameRect();
-    const count=Math.round(clamp(rect.w*rect.h/115,1200,5200));
-    const cols=Math.max(32,Math.round(Math.sqrt(count*sourceAspect)));
-    const rows=Math.max(20,Math.ceil(count/cols));
-    let dark=0,bright=0;
-    // Find the dominant background from the original, full-resolution first frame.
-    for(let y=0;y<sourceH;y+=2) {
-      for(let x=0;x<sourceW;x+=2) {
-        const i=(y*sourceW+x)*4;
-        const l=sourcePixels[i]*0.2126+sourcePixels[i+1]*0.7152+sourcePixels[i+2]*0.0722;
-        if(l<128) dark++; else bright++;
+  function sourceLuma(data,x,y) {
+    const sx=clamp(Math.floor(x),0,sourceW-1);
+    const sy=clamp(Math.floor(y),0,sourceH-1);
+    return data[sy*sourceW+sx]/255;
+  }
+
+  function mapSignal(col,row,luma,time,rectOverride) {
+    const area=rectOverride||rect;
+    const nx=col/(columns-1);
+    const ny=row/(rows-1);
+    const centered=nx-0.5;
+    const signal=(luma-0.48);
+    const neighborWave=Math.sin(ny*TAU*2.5+nx*11+time*0.45);
+    const fineWave=Math.sin(ny*TAU*7.4-nx*19-time*0.77);
+    // Pixel brightness bends the strand sideways; this deliberately is NOT a copy of the frame.
+    const displacement=signal*area.w*0.145+neighborWave*area.w*0.006+fineWave*area.w*0.002;
+    const pinch=Math.cos((nx-0.5)*Math.PI*2)*area.w*0.018;
+    const yWave=Math.sin(nx*10+time*0.3+ny*4)*area.h*0.003;
+    return {
+      x:area.x+nx*area.w+displacement+pinch,
+      y:area.y+ny*area.h+yWave,
+      lum:luma
+    };
+  }
+
+  function buildLoomPoints(data) {
+    if(!data||!sourceW||!sourceH) return;
+    setFrameRect();
+    columns=Math.round(clamp(rect.w/5.2,110,220));
+    rows=Math.round(clamp(rect.h/6.7,46,96));
+    loomPoints=[];
+    for(let c=0;c<columns;c++) {
+      const strand=[];
+      const sx=(c+0.5)/columns*sourceW;
+      for(let r=0;r<rows;r++) {
+        const sy=(r+0.5)/rows*sourceH;
+        const lum=sourceLuma(data,sx,sy);
+        const p=mapSignal(c,r,lum,0);
+        strand.push({
+          x:p.x,y:p.y,
+          alpha:0.075+Math.pow(lum,0.78)*0.92,
+          width:0.28+lum*1.2,
+          lum,
+          phase:random(0,TAU),
+          bead:(r%9===0 && (c+r)%3===0)
+        });
       }
+      loomPoints.push(strand);
     }
-    const darkIsForeground=dark<bright;
-    const targets=[];
-    let foregroundSamples=0;
-    for(let row=0;row<rows;row++) {
-      for(let col=0;col<cols;col++) {
-        const px=Math.min(sourceW-1,Math.floor((col+0.5)/cols*sourceW));
-        const py=Math.min(sourceH-1,Math.floor((row+0.5)/rows*sourceH));
-        const i=(py*sourceW+px)*4;
-        const l=sourcePixels[i]*0.2126+sourcePixels[i+1]*0.7152+sourcePixels[i+2]*0.0722;
-        const isForeground=darkIsForeground ? l<128 : l>=128;
-        if(!isForeground) continue;
-        foregroundSamples++;
-        targets.push({
-          x:rect.x+(col+0.5)/cols*rect.w,
-          y:rect.y+(row+0.5)/rows*rect.h,
-          lum:l/255,
-          row,col
+  }
+
+  function samplePlayingFrame() {
+    if(video.readyState<HTMLMediaElement.HAVE_CURRENT_DATA||!video.videoWidth||!sourceW) return false;
+    try {
+      sampleCtx.drawImage(video,0,0,sourceW,sourceH);
+      const image=sampleCtx.getImageData(0,0,sourceW,sourceH).data;
+      const luma=new Uint8Array(sourceW*sourceH);
+      for(let i=0,j=0;i<image.length;i+=4,j++) {
+        luma[j]=Math.round(image[i]*0.2126+image[i+1]*0.7152+image[i+2]*0.0722);
+      }
+      currentLuma=luma;
+      return true;
+    } catch(error) { return false; }
+  }
+
+  function drawWaiting(now) {
+    ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
+    const t=now*0.001,cx=W*0.5,cy=H*0.5,scale=Math.min(W,H);
+    const pulse=0.5+0.5*Math.sin(t*1.18);
+    const core=scale*(0.012+0.006*pulse);
+    const glow=ctx.createRadialGradient(cx,cy,0,cx,cy,core*13);
+    glow.addColorStop(0,"rgba(255,255,255,"+(0.66+0.2*pulse)+")");
+    glow.addColorStop(0.09,"rgba(188,224,255,0.30)");
+    glow.addColorStop(0.33,"rgba(64,125,180,0.09)");
+    glow.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=glow;ctx.beginPath();ctx.arc(cx,cy,core*13,0,TAU);ctx.fill();
+    for(let k=0;k<4;k++) {
+      const angle=t*(k%2?-0.10:0.075)*(k+1);
+      const rx=scale*(0.042+k*0.037),ry=rx*(0.46+k*0.075);
+      ctx.beginPath();ctx.ellipse(cx,cy,rx,ry,angle,0,TAU);
+      ctx.setLineDash([1.2+k*0.65,8+k*3]);
+      ctx.lineDashOffset=-t*(3+k*4);
+      ctx.strokeStyle="rgba(204,232,255,"+((0.17-k*0.028)*(0.65+0.35*pulse))+")";
+      ctx.lineWidth=k===0?0.85:0.55;ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    for(const m of motes) {
+      const a=m.angle+t*m.speed*0.16;
+      const x=W/2+Math.cos(a)*m.r+Math.sin(t*0.32+m.phase)*m.drift;
+      const y=H/2+Math.sin(a)*m.r*0.72+Math.cos(t*0.25+m.phase)*m.drift;
+      ctx.globalAlpha=m.alpha*(0.58+0.42*Math.sin(t*m.speed+m.phase));
+      ctx.fillStyle=m.cool?"#bde7ff":"#f2f7ff";
+      ctx.beginPath();ctx.arc(x,y,m.radius,0,TAU);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    // A slow, silent optical pulse makes the centre feel like a living object.
+    const arc=t*0.7;
+    ctx.strokeStyle="rgba(255,255,255,"+(0.25+0.4*pulse)+")";
+    ctx.lineWidth=1;
+    ctx.beginPath();ctx.arc(cx,cy,core*1.7,arc,arc+Math.PI*1.25);ctx.stroke();
+  }
+
+  function createFormationTargets() {
+    if(!firstLuma||!sourceW||!sourceH) return [];
+    const points=[];
+    const cx=W/2,cy=H/2;
+    const driftRadius=Math.max(W,H)*0.6;
+    for(let c=0;c<columns;c++) {
+      for(let r=0;r<rows;r++) {
+        const i=(c*rows+r);
+        if(i%2!==0) continue;
+        const sx=(c+0.5)/columns*sourceW;
+        const sy=(r+0.5)/rows*sourceH;
+        const lum=sourceLuma(firstLuma,sx,sy);
+        const p=mapSignal(c,r,lum,0);
+        points.push({
+          x:p.x,y:p.y,
+          lum,
+          size:0.45+Math.pow(lum,0.7)*1.55,
+          alpha:0.10+lum*0.9,
+          startX:random(-W*0.12,W*1.12),
+          startY:random(-H*0.12,H*1.12),
+          curve:random(-65,65),
+          phase:random(0,TAU),
+          direction:Math.random()<0.5?-1:1
         });
       }
     }
-    // If frame zero is almost completely flat, use the strongest local contrast cells.
-    // The native source itself remains untouched; this fallback only affects the intro.
-    if(targets.length<48) {
-      targets.length=0;
-      const candidates=[];
-      for(let row=0;row<rows;row++) {
-        for(let col=0;col<cols;col++) {
-          const px=Math.min(sourceW-1,Math.floor((col+0.5)/cols*sourceW));
-          const py=Math.min(sourceH-1,Math.floor((row+0.5)/rows*sourceH));
-          const i=(py*sourceW+px)*4;
-          const l=sourcePixels[i]*0.2126+sourcePixels[i+1]*0.7152+sourcePixels[i+2]*0.0722;
-          candidates.push({l,x:rect.x+(col+0.5)/cols*rect.w,y:rect.y+(row+0.5)/rows*rect.h,row,col});
-        }
-      }
-      const average=candidates.reduce((sum,p)=>sum+p.l,0)/Math.max(1,candidates.length);
-      if(average>127) {
-        // A white opening frame should assemble as a full field, not a random patch.
-        for(const p of candidates) targets.push({x:p.x,y:p.y,lum:1,row:p.row,col:p.col});
-      } else {
-        // If the opening frame is pure black, particles converge and vanish into that black frame.
-        const count=Math.min(220,candidates.length);
-        for(let i=0;i<count;i++) {
-          const angle=(i/count)*Math.PI*2;
-          targets.push({
-            x:rect.x+rect.w*0.5+Math.cos(angle)*Math.min(rect.w,rect.h)*0.025,
-            y:rect.y+rect.h*0.5+Math.sin(angle)*Math.min(rect.w,rect.h)*0.025,
-            lum:0,row:Math.floor(i/cols),col:i%cols,fadeOut:true
-          });
-        }
-      }
-    }
-    // Each bright mark starts elsewhere, then eases into the selected first-frame pixels.
-    const n=targets.length;
-    targetParticles=[];
-    for(let i=0;i<n;i++) {
-      const t=targets[i], angle=rnd(0,Math.PI*2);
-      const side=Math.random()<0.5?-1:1;
-      targetParticles.push({
-        x:rnd(-W*0.08,W*1.08), y:rnd(-H*0.08,H*1.08),
-        fromX:rnd(-W*0.08,W*1.08),fromY:rnd(-H*0.08,H*1.08),
-        toX:t.x,toY:t.y,
-        size:rnd(0.85,2.35),
-        delay:rnd(0,0.20),
-        curve:rnd(-46,46)*side,
-        angle,side,
-        alpha:rnd(0.55,1),
-        hue:Math.random()<0.16,
-        lum:t.lum,
-        fadeOut:!!t.fadeOut,
-        row:t.row,col:t.col
-      });
-    }
-    targetsReady=targetParticles.length>0;
+    // Keep count high enough for strands but bounded on high-resolution screens.
+    return points.length>1600 ? points.filter((_,i)=>i%Math.ceil(points.length/1600)===0) : points;
   }
+  let targets=[];
 
-  function drawIdle(now) {
-    ctx.fillStyle="#000"; ctx.fillRect(0,0,W,H);
-    const t=now*0.001,cx=W/2,cy=H/2,scale=Math.min(W,H);
-    const pulse=0.5+0.5*Math.sin(t*1.6);
-    const core=scale*(0.018+0.005*pulse);
-    // A bright, breathing seed and slow orbit make the page feel alive without any text.
-    const glow=ctx.createRadialGradient(cx,cy,0,cx,cy,core*9);
-    glow.addColorStop(0,"rgba(240,249,255,"+(0.52+0.12*pulse)+")");
-    glow.addColorStop(0.18,"rgba(136,200,255,0.16)");
-    glow.addColorStop(1,"rgba(20,48,86,0)");
-    ctx.fillStyle=glow; ctx.beginPath();ctx.arc(cx,cy,core*9,0,Math.PI*2);ctx.fill();
-    for(let ring=0;ring<3;ring++) {
-      const r=scale*(0.052+ring*0.042);
-      ctx.beginPath();
-      ctx.ellipse(cx,cy,r,r*(0.62+ring*0.07),t*(ring%2?-.15:.11),0,Math.PI*2);
-      ctx.strokeStyle="rgba(190,223,255,"+((0.16-ring*0.035)*(0.6+0.4*pulse))+")";
-      ctx.lineWidth=0.7;ctx.setLineDash([1.5+ring,8+ring*3]);ctx.lineDashOffset=-t*(6+ring*5);ctx.stroke();
-    }
-    ctx.setLineDash([]);
-    for(const p of particles) {
-      const orbitAngle=p.phase+t*p.speed*p.direction;
-      const rr=scale*(0.045+0.11*(0.5+0.5*Math.sin(p.phase*1.7+t*0.4)));
-      const x=cx+Math.cos(orbitAngle)*rr+Math.sin(t*0.3+p.phase)*p.orbit;
-      const y=cy+Math.sin(orbitAngle)*rr*0.62+Math.cos(t*0.35+p.phase)*p.orbit;
-      ctx.globalAlpha=p.alpha*(0.55+0.45*Math.sin(t*p.speed+p.phase));
-      ctx.fillStyle=p.hue?"#c1eaff":"#eef7ff";
-      ctx.beginPath();ctx.arc(x,y,p.size,0,Math.PI*2);ctx.fill();
-    }
-    ctx.globalAlpha=1;
-    // A tiny bright glint travels around the centre, implying the scene is interactive.
-    const a=t*0.9;
-    const gx=cx+Math.cos(a)*scale*0.095,gy=cy+Math.sin(a)*scale*0.059;
-    ctx.fillStyle="rgba(245,252,255,"+(0.45+0.4*pulse)+")";
-    ctx.beginPath();ctx.arc(gx,gy,1.4+1.1*pulse,0,Math.PI*2);ctx.fill();
-  }
-
-  function start(event) {
-    if(state!=="idle") {
-      if(playBlocked) retryPlayback();
-      return;
-    }
-    clickX=event.clientX; clickY=event.clientY;
+  function begin(event) {
+    if(state!=="waiting") return;
+    const box=canvas.getBoundingClientRect();
+    const px=event.clientX-box.left,py=event.clientY-box.top;
     state="forming";
-    startedAt=performance.now();
-    // Start a muted video directly inside the trusted tap/click to unlock playback.
-    video.muted=true;
-    video.volume=1;
-    try {
-      const promise=video.play();
-      if(promise&&typeof promise.then==="function") promise.then(()=>{playBlocked=false;}).catch(()=>{playBlocked=true;});
-    } catch(_) { playBlocked=true; }
-    if(!targetsReady) {
-      if(prepareNativeFrame()) beginFormation();
-    } else beginFormation();
-  }
-
-  function beginFormation() {
-    if(state!=="forming"||!targetsReady||formationStarted) return;
-    particles=targetParticles;
-    formationStarted=true;
-    startedAt=performance.now();
-  }
-  let formationStarted=false;
-
-  function retryPlayback() {
+    startAt=performance.now();
+    origin={x:px,y:py};
+    targets=createFormationTargets();
+    // Begin the media element inside the trusted gesture, but keep its volume silent during formation.
     video.muted=false;
-    video.play().then(()=>{playBlocked=false;}).catch(()=>{playBlocked=true;});
+    video.volume=0;
+    try {
+      playPromise=video.play();
+      if(playPromise&&typeof playPromise.then==="function") {
+        playPromise.then(()=>{playBlocked=false;}).catch(()=>{playBlocked=true;});
+      }
+    } catch(_) { playBlocked=true; }
+    if(!targets.length && captureNativeFrame()) targets=createFormationTargets();
   }
 
   function drawFormation(now) {
     ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
-    const progress=clamp((now-startedAt)/1450,0,1);
-    const wave=clamp((now-startedAt)/850,0,1);
-    // A shock ring expands from the actual touch point while the particles travel in curved paths.
-    if(progress<0.88) {
-      const radius=wave*Math.hypot(W,H)*0.56;
-      ctx.beginPath();ctx.arc(clickX,clickY,radius,0,Math.PI*2);
-      ctx.strokeStyle="rgba(212,238,255,"+((1-wave)*0.36)+")";ctx.lineWidth=1;ctx.stroke();
-      ctx.beginPath();ctx.arc(clickX,clickY,Math.max(1,radius-8),0,Math.PI*2);
-      ctx.strokeStyle="rgba(124,192,255,"+((1-wave)*0.15)+")";ctx.lineWidth=2;ctx.stroke();
+    const raw=clamp((now-startAt)/1450,0,1),progress=smooth(raw),cx=origin.x,cy=origin.y;
+    const radius=raw*Math.hypot(W,H)*0.7;
+    for(let i=0;i<3;i++) {
+      const r=radius-i*25;
+      if(r<0) continue;
+      ctx.beginPath();ctx.arc(cx,cy,r,0,TAU);
+      ctx.strokeStyle="rgba(215,239,255,"+((1-raw)*0.28)+")";
+      ctx.lineWidth=i===0?1.15:0.65;ctx.stroke();
     }
-    for(const p of particles) {
-      const q=clamp((progress-p.delay)/(1-p.delay),0,1), eased=easeOut(q);
-      const dx=p.toX-p.fromX,dy=p.toY-p.fromY;
-      const arc=Math.sin(q*Math.PI)*p.curve;
-      const x=p.fromX+dx*eased+Math.cos(p.angle)*arc;
-      const y=p.fromY+dy*eased+Math.sin(p.angle)*arc;
-      const size=p.size*(0.7+0.42*eased);
-      const alpha=p.alpha*(0.15+0.85*eased)*(p.fadeOut ? 1-q : 1);
-      if(q<0.92&&Math.random()<0.13) {
-        ctx.strokeStyle="rgba(193,225,255,"+(alpha*0.19)+")";
-        ctx.lineWidth=0.6;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x-dx*0.045,y-dy*0.045);ctx.stroke();
+    for(const p of targets) {
+      const local=clamp((raw-p.delay||raw)/1,0,1);
+      const e=ease(local);
+      const bulge=Math.sin(local*Math.PI)*p.curve;
+      const x=p.startX+(p.x-p.startX)*e+Math.cos(p.phase)*bulge;
+      const y=p.startY+(p.y-p.startY)*e+Math.sin(p.phase)*bulge;
+      const alpha=p.alpha*(0.16+0.84*e);
+      if(local<0.86 && Math.random()<0.035) {
+        ctx.strokeStyle="rgba(196,226,255,"+(alpha*0.25)+")";
+        ctx.lineWidth=0.55;ctx.beginPath();ctx.moveTo(x,y);
+        ctx.lineTo(x+(p.x-x)*0.07,y+(p.y-y)*0.07);ctx.stroke();
       }
       ctx.globalAlpha=alpha;
-      ctx.fillStyle=p.hue&&q<0.85?"#b3e9ff":"#fff";
-      if(p.row%7===0&&p.col%5===0) {
-        ctx.save();ctx.translate(x,y);ctx.rotate((1-q)*p.side*1.5);
-        ctx.fillRect(-size*1.8,-size*0.45,size*3.6,size*0.9);ctx.restore();
-      } else {
-        ctx.fillRect(x-size/2,y-size/2,size,size);
+      ctx.fillStyle=p.lum>0.75?"#fff":"#bcdfff";
+      ctx.fillRect(x-p.size/2,y-p.size/2,p.size,p.size);
+    }
+    ctx.globalAlpha=1;
+    if(raw>=1) {
+      state="resetting";
+      try {
+        video.pause();
+        video.currentTime=0;
+        if(video.seeking===false) finishReset();
+      } catch(_) { finishReset(); }
+    }
+  }
+
+  function finishReset() {
+    if(state!=="resetting") return;
+    state="playing";
+    video.muted=false;
+    video.volume=1;
+    try {
+      const result=video.play();
+      if(result&&typeof result.catch==="function") result.catch(()=>{playBlocked=true;});
+    } catch(_) { playBlocked=true; }
+    lastDraw=0;
+  }
+
+  function drawLoom(now) {
+    ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
+    if(!samplePlayingFrame()) return;
+    const area=rect,time=now*0.001;
+    const useLuma=currentLuma;
+    const stepX=sourceW/columns,stepY=sourceH/rows;
+    const strandPoints=new Array(columns);
+    for(let c=0;c<columns;c++) {
+      const arr=new Array(rows);
+      const sx=(c+0.5)*stepX;
+      for(let r=0;r<rows;r++) {
+        const sy=(r+0.5)*stepY;
+        const lum=sourceLuma(useLuma,sx,sy);
+        const p=mapSignal(c,r,lum,time,area);
+        arr[r]={x:p.x,y:p.y,lum};
+      }
+      strandPoints[c]=arr;
+    }
+
+    // Main visual: a woven curtain of living filaments, not a pixel copy of the video.
+    for(let c=0;c<columns;c++) {
+      const strand=strandPoints[c];
+      ctx.beginPath();
+      for(let r=0;r<rows;r++) {
+        const p=strand[r];
+        if(r===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y);
+      }
+      const average=strand.reduce((sum,p)=>sum+p.lum,0)/rows;
+      ctx.strokeStyle="rgba(241,248,255,"+(0.055+Math.pow(average,0.85)*0.52)+")";
+      ctx.lineWidth=0.28+average*1.05;
+      ctx.stroke();
+    }
+
+    // Bright transients become isolated pearls on the threads.
+    for(let c=0;c<columns;c+=2) {
+      const strand=strandPoints[c];
+      for(let r=1;r<rows-1;r+=3) {
+        const p=strand[r];
+        const before=strand[r-1].lum,after=strand[r+1].lum;
+        const edge=Math.abs(p.lum-before)+Math.abs(p.lum-after);
+        const energy=clamp(edge*2.2+p.lum*0.24,0,1);
+        if(energy<0.18) continue;
+        const radius=0.35+energy*1.6;
+        ctx.globalAlpha=0.15+energy*0.72;
+        ctx.fillStyle=(c+r)%7===0?"#c9edff":"#ffffff";
+        ctx.beginPath();ctx.arc(p.x,p.y,radius,0,TAU);ctx.fill();
       }
     }
     ctx.globalAlpha=1;
-    if(progress>=1) revealVideo();
-  }
 
-  function revealVideo() {
-    if(state!=="forming") return;
-    state="video";
-    // Rewind to the actual first frame, then make sound audible.
-    try {
-      video.currentTime=0;
-      video.muted=false;
-    } catch(_) {}
-    if(video.paused) retryPlayback();
-  }
-
-  function drawVideo(now) {
-    ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);
-    if(video.readyState<HTMLMediaElement.HAVE_CURRENT_DATA||!video.videoWidth) {
-      if(targetsReady) drawFormation(now);
-      return;
-    }
-    const rect=frameRect();
-    ctx.imageSmoothingEnabled=false;
-    ctx.drawImage(video,rect.x,rect.y,rect.w,rect.h);
-    // Subtle moving signal scanlines; the source movie keeps its native proportions and detail.
-    ctx.save();
-    ctx.beginPath();ctx.rect(rect.x,rect.y,rect.w,rect.h);ctx.clip();
-    ctx.globalAlpha=0.11;ctx.fillStyle="#000";
-    const offset=Math.floor(now*0.018)%4;
-    for(let y=rect.y+offset;y<rect.y+rect.h;y+=4) ctx.fillRect(rect.x,y,rect.w,1);
-    ctx.restore();
-    ctx.imageSmoothingEnabled=true;
-  }
-
-  function render(now) {
-    if(state==="idle") drawIdle(now);
-    else if(state==="forming") {
-      if(!formationStarted) {
-        if(targetsReady) beginFormation();
-        else drawIdle(now);
+    // Sparse cross-threads make the signal feel woven rather than screen-shaped.
+    ctx.lineWidth=0.5;
+    for(let r=2;r<rows;r+=5) {
+      ctx.beginPath();
+      let previous=null;
+      for(let c=0;c<columns;c+=3) {
+        const p=strandPoints[c][r];
+        if(previous && (p.lum>0.23 || previous.lum>0.23)) {
+          ctx.moveTo(previous.x,previous.y);
+          ctx.lineTo(p.x,p.y);
+        }
+        previous=p;
       }
-      if(formationStarted) drawFormation(now);
-    } else if(state==="video") drawVideo(now);
-    requestAnimationFrame(render);
+      ctx.strokeStyle="rgba(180,215,255,0.075)";ctx.stroke();
+    }
   }
 
-  canvas.addEventListener("pointerdown",start,{passive:true});
+  function tick(now) {
+    if(state==="waiting") drawWaiting(now);
+    else if(state==="forming") drawFormation(now);
+    else if(state==="playing") drawLoom(now);
+    requestAnimationFrame(tick);
+  }
+
   video.addEventListener("loadedmetadata",()=>{
-    sourceW=video.videoWidth;sourceH=video.videoHeight;sourceAspect=sourceW/sourceH||4/3;
-    if(video.readyState>=HTMLMediaElement.HAVE_CURRENT_DATA) {
-      if(state==="idle") prepareNativeFrame();
-      else if(state==="forming"&&!formationStarted) {
-        video.pause();
-        if(video.currentTime>0.001) {
-          try { video.currentTime=0; } catch(_) {}
-        } else if(prepareNativeFrame()) beginFormation();
-      }
-    }
+    sourceW=video.videoWidth;sourceH=video.videoHeight;aspect=sourceW/sourceH||4/3;
+    setFrameRect();
   });
   video.addEventListener("loadeddata",()=>{
-    if(!sourceReady) {
-      // If interaction raced the preload, seek all the way to frame zero before capturing targets.
-      if(state==="forming") {
-        video.pause();
-        if(video.currentTime>0.001) {
-          try { video.currentTime=0; } catch(_) {}
-          return;
-        }
-      }
-      if(prepareNativeFrame() && state==="forming") beginFormation();
-      else if(state==="idle") prepareNativeFrame();
+    if(!firstFrameReady) {
+      video.pause();
+      try { video.currentTime=0; } catch(_) {}
+      if(captureNativeFrame() && state==="forming" && !targets.length) targets=createFormationTargets();
     }
   });
   video.addEventListener("seeked",()=>{
-    if(state==="forming"&&!formationStarted&&video.readyState>=HTMLMediaElement.HAVE_CURRENT_DATA) {
-      if(prepareNativeFrame()) beginFormation();
+    if(state==="resetting") finishReset();
+    else if(!firstFrameReady && video.readyState>=HTMLMediaElement.HAVE_CURRENT_DATA) {
+      captureNativeFrame();
+      if(state==="forming"&&!targets.length) targets=createFormationTargets();
     }
   });
-  video.addEventListener("error",()=>console.error("Could not load bad_apple.mp4."));
-
-  window.addEventListener("resize",()=>{
-    resize();
-    if(state==="idle") {
-      makeIdleParticles();
-      if(sourceReady) makeTargets();
-    }
-  });
+  video.addEventListener("error",()=>console.error("Could not load bad_apple.mp4 from repository root."));
+  canvas.addEventListener("pointerdown",begin,{passive:true});
+  window.addEventListener("resize",resize);
   resize();
-  makeIdleParticles();
-  requestAnimationFrame(render);
+  createMotes();
+  requestAnimationFrame(tick);
 })();
 </script>
 </body>
