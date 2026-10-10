@@ -17,15 +17,14 @@
   "use strict";
   const pages = [
     "badapple-elements.html",
-    "badapple-xp-popups.html",
-    "badapple-origami-flock.html"
+    "badapple-xp-popups.html"
   ];
-  const key = "badAppleExperienceShuffleV6";
+  const key = "badAppleExperienceShuffleV7";
   const frame = document.getElementById("page");
   let previous = "";
   try { previous = localStorage.getItem(key) || ""; } catch (_) {}
 
-  // Select randomly from the original, XP-popup and origami-flock experiences.
+  // Choose randomly between the original element-based and XP-popup experiences.
   // Prefer a different page than last time so the experiences take turns.
   let choices = pages.filter(path => path !== previous);
   if (!choices.length) choices = pages;
