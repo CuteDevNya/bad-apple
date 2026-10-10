@@ -722,42 +722,6 @@
     }
   }
 
-  async function beginAutomatically() {
-    if (started) return;
-    started = true;
-    video.muted = false;
-    video.volume = 1;
-    try {
-      await video.play();
-      hideGate();
-      animate();
-    } catch (_) {
-      // Audio autoplay may be blocked: start the visuals muted, then offer sound.
-      video.muted = true;
-      try {
-        await video.play();
-        animate();
-        showGate("🔊 Ton aktivieren");
-      } catch (_) {
-        showGate("▶ Start Bad Apple mit Ton");
-      }
-    }
-  }
-
-  startButton.addEventListener("click", async () => {
-    if (startButton.disabled) return;
-    video.muted = false;
-    video.volume = 1;
-    try {
-      await video.play();
-      hideGate();
-      animate();
-    } catch (error) {
-      startButton.textContent = "▶ Wiedergabe starten";
-      console.warn("Playback still blocked:", error);
-    }
-  });
-
   video.addEventListener("error", () => {
     if (sourceIndex < videoFiles.length) loadNextVideo();
     else missing.style.display = "block";
