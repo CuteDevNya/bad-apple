@@ -15,30 +15,30 @@
 <script>
 (() => {
   "use strict";
-  // Only keep genuinely different experiences in the rotation.
   const pages = [
     "badapple-elements.html",
-    "badapple-constellation.html"
+    "badapple-xp-popups.html"
   ];
-  const key = "badAppleShuffleV6";
+  const key = "badAppleXPPopupShuffleV1";
   const frame = document.getElementById("page");
   let previous = "";
   try { previous = localStorage.getItem(key) || ""; } catch (_) {}
 
-  // Randomly choose any page except the immediately previous one.
+  // Select randomly from the original and the new XP-popup experience.
+  // Prefer a different page than last time so both designs remain easy to discover.
   let choices = pages.filter(path => path !== previous);
-  if (choices.length === 0) choices = pages;
-  let n;
+  if (!choices.length) choices = pages;
+  let index;
   if (window.crypto && window.crypto.getRandomValues) {
-    const seed = new Uint32Array(1);
-    window.crypto.getRandomValues(seed);
-    n = seed[0] % choices.length;
+    const value = new Uint32Array(1);
+    window.crypto.getRandomValues(value);
+    index = value[0] % choices.length;
   } else {
-    n = Math.floor(Math.random() * choices.length);
+    index = Math.floor(Math.random() * choices.length);
   }
-  const selected = choices[n];
-  try { localStorage.setItem(key, selected); } catch (_) {}
 
+  const selected = choices[index];
+  try { localStorage.setItem(key, selected); } catch (_) {}
   frame.src = selected + "?v=" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
 })();
 </script>
