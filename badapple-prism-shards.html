@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#03040a">
+<title>Bad Apple — Prismatic Collapse</title>
+<style>
+  * { box-sizing:border-box; }
+  html,body { width:100%;height:100%;margin:0;overflow:hidden;background:#03040a; }
+  body { position:fixed;inset:0;touch-action:manipulation;user-select:none;-webkit-user-select:none; }
+  #scene { position:absolute;inset:0;width:100%;height:100%;display:block; }
+  #video { position:fixed;width:1px;height:1px;left:-20px;top:-20px;opacity:0;pointer-events:none; }
+  #hint { position:fixed;left:0;right:0;bottom:max(24px,env(safe-area-inset-bottom));text-align:center;
+    color:#c6d5f8;font:10px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.28em;
+    opacity:.82;pointer-events:none;text-shadow:0 0 12px #8bd9ff66; }
+  #error { position:fixed;left:14px;right:14px;bottom:18px;display:none;padding:12px;
+    color:#ffe8f7;background:#281323;border:1px solid #ff8ccc;border-radius:8px;
+    font:12px/1.5 ui-monospace,monospace;text-align:center; }
+</style>
+</head>
+<body>
+<canvas id="scene" aria-label="Bad Apple as a crystalline triangular mosaic"></canvas>
+<video id="video" playsinline preload="auto" loop crossorigin="anonymous" src="bad_apple.mp4"></video>
+<div id="hint">TOUCH ANYWHERE TO SHATTER THE ORBIT</div>
+<div id="error">Das Video „bad_apple.mp4“ konnte nicht geladen werden.</div>
+<script>
+(() => {
+  "use strict";
+  const canvas = document.getElementById("scene");
+  const ctx = canvas.getContext("2d", { alpha:false, desynchronized:true });
+  const video = document.getElementById("video");
+  const hint = document.getElementById("hint");
+  const errorBox = document.getElementById("error");
+
+  const COLORS = ["#f6fbff","#ffffff","#e0f8ff","#d9dcff","#ffe0f2","#bcfff3"];
+  const EDGE_CYAN = "rgba(113,239,255,.30)";
+  const EDGE_PINK = "rgba(255,125,210,.23)";
+  const CELL_SIZE = 7.0;
+  const FRAME_UPDATE_MS = 45;
+  const SHATTER_MS = 1480;
+  const stars = [];
+  const shards = [];
+  const rings = [];
+  let state = "intro";
+  let startTime = 0;
+  let lastVideoDraw = 0;
+  let lastSample = null;
+  let frameW = 1, frameH = 1, frameX = 0, frameY = 0;
+  let gridW = 1, gridH = 1, sampleW = 2, sampleH = 2;
+  let pixelRatio = 1;
+  let sampleCanvas = document.createElement("canvas");
+  let sampleCtx = sampleCanvas.getContext("2d", { willReadFrequently:true });
+  let audioContext = null, audioGain = null, audioSource = null;
+  let audioReady = false;
+  let canPlay = false;
+  let reducedMotion = false;
+
+  const rand = (a,b) => a + Math.random()*(b-a);
+  const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+  const easeOut = t => 1-Math.pow(1-t,3);
+  const easeInOut = t => t<.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+
+  function resize() {
+    const W = Math.max(1,window.innerWidth);
+    const H = Math.max(1,window.innerHeight);
+    pixelRatio = Math.min(window.devicePixelRatio || 1, 1.65);
+    canvas.width = Math.round(W*pixelRatio);
+    canvas.height = Math.round(H*pixelRatio);
+    canvas.style.width = W+"px";
+    canvas.style.height = H+"px";
+    ctx.setTransform(pixelRatio,0,0,pixelRatio,0,0);
+    const aspect = video.videoWidth && video.videoHeight ? video.videoWidth/video.videoHeight : 4/3;
+    frameW = Math.min(W,H*aspect);
+    frameH = frameW/aspect;
+    frameX = (W-frameW)/2;
+    frameY = (H-frameH)/2;
+    gridW = Math.max(18,Math.ceil(frameW/CELL_SIZE));
+    gridH = Math.max(18,Math.ceil(frameH/CELL_SIZE));
+    sampleW = gridW*2;
+    sampleH = gridH*2;
+    sampleCanvas.width=sampleW;
+    sampleCanvas.height=sampleH;
+    if (state==="playing") lastVideoDraw=0;
+  }
+
+  function initScene() {
+    stars.length=0;
+    shards.length=0;
+    rings.length=0;
+    const W=window.innerWidth,H=window.innerHeight;
+    const count=Math.round(clamp(W*H/4300,55,145));
+    for(let i=0;i<count;i++) stars.push({
+      x:Math.random()*W,y:Math.random()*H,r:rand(.35,1.55),
+      phase:rand(0,Math.PI*2),speed:rand(.35,1.4),alpha:rand(.14,.68)
+    });
+    const minSide=Math.min(W,H);
+    for(let i=0;i<178;i++) {
+      const angle=rand(0,Math.PI*2);
+      const orbit=rand(minSide*.17,minSide*.43);
+      const size=rand(3,16);
+      shards.push({
+        angle,orbit,size,aspect:rand(.45,1.9),rotation:rand(0,Math.PI*2),
+        spin:rand(-.9,.9),wobble:rand(2,16),phase:rand(0,Math.PI*2),
+        hue:Math.floor(rand(0,5)),stretch:rand(.5,1.9),seed:Math.random()
+      });
+    }
+    for(let i=0;i<5;i++) rings.push({r:.28+i*.075,phase:rand(0,Math.PI*2),speed:rand(-.16,.16)});
+  }
+
+  function drawBackground(now) {
+    const W=window.innerWidth,H=window.innerHeight;
+    ctx.fillStyle="#03040a";
+    ctx.fillRect(0,0,W,H);
+    const bg=ctx.createRadialGradient(W*.5,H*.45,1,W*.5,H*.45,Math.max(W,H)*.75);
+    bg.addColorStop(0,"#10182a");
+    bg.addColorStop(.46,"#080a16");
+    bg.addColorStop(1,"#020308");
+    ctx.fillStyle=bg;
+    ctx.fillRect(0,0,W,H);
+    for(const s of stars) {
+      const shimmer=.62+.38*Math.sin(now*.001*s.speed+s.phase);
+      ctx.globalAlpha=s.alpha*shimmer;
+      ctx.fillStyle=s.phase%2>.7?"#9feaff":"#e6e9ff";
+      ctx.fillRect(s.x,s.y,s.r,s.r);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  function traceShard(x,y,size,aspect,rotation,variant) {
+    const a=size*aspect;
+    const b=size/aspect;
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.rotate(rotation);
+    ctx.beginPath();
+    if(variant%4===0) {
+      ctx.moveTo(-a*.5,-b*.35);ctx.lineTo(a*.18,-b*.52);ctx.lineTo(a*.5,b*.2);ctx.lineTo(-a*.14,b*.48);ctx.closePath();
+    } else if(variant%4===1) {
+      ctx.moveTo(0,-b*.62);ctx.lineTo(a*.55,b*.32);ctx.lineTo(-a*.48,b*.45);ctx.closePath();
+    } else if(variant%4===2) {
+      ctx.moveTo(-a*.56,-b*.17);ctx.lineTo(a*.26,-b*.55);ctx.lineTo(a*.5,b*.38);ctx.lineTo(-a*.15,b*.5);ctx.closePath();
+    } else {
+      ctx.moveTo(0,-b*.58);ctx.lineTo(a*.4,-b*.1);ctx.lineTo(a*.22,b*.55);ctx.lineTo(-a*.48,b*.12);ctx.closePath();
+    }
+    return;
+  }
+
+  function drawShard(shard,x,y,angle,alpha,now,scale=1) {
+    const size=shard.size*scale;
+    const aspect=shard.aspect;
+    const rotation=shard.rotation+angle+now*.00012*shard.spin;
+    traceShard(x,y,size,aspect,rotation,Math.floor(shard.seed*4));
+    const fill=shard.hue%5===0?"#fff1fc":shard.hue%5===1?"#95f4ff":shard.hue%5===2?"#8ca9ff":shard.hue%5===3?"#e9d2ff":"#ff88d0";
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=fill;
+    ctx.fill();
+    ctx.strokeStyle=shard.hue%2?EDGE_CYAN:EDGE_PINK;
+    ctx.lineWidth=.65;
+    ctx.stroke();
+    ctx.globalAlpha=1;
+    ctx.restore();
+  }
+
+  function drawIntro(now) {
+    const W=window.innerWidth,H=window.innerHeight;
+    const cx=W/2,cy=H*.465,minSide=Math.min(W,H);
+    drawBackground(now);
+
+    ctx.save();
+    ctx.translate(cx,cy);
+    for(const ring of rings) {
+      const pulse=1+.012*Math.sin(now*.0011+ring.phase);
+      ctx.beginPath();
+      ctx.ellipse(0,0,minSide*ring.r*pulse,minSide*ring.r*pulse*.82,ring.phase,0,Math.PI*2);
+      const grad=ctx.createLinearGradient(-minSide*.4,0,minSide*.4,0);
+      grad.addColorStop(0,"rgba(117,239,255,.02)");
+      grad.addColorStop(.3,"rgba(117,239,255,.42)");
+      grad.addColorStop(.7,"rgba(255,117,212,.38)");
+      grad.addColorStop(1,"rgba(255,117,212,.02)");
+      ctx.strokeStyle=grad;
+      ctx.lineWidth=ring.r<.4?1.1:.65;
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // The centre is a black eclipse with a bright, shifting crescent — not an apple silhouette.
+    const radius=minSide*.145;
+    ctx.save();
+    ctx.shadowColor="#75eeff";
+    ctx.shadowBlur=26;
+    ctx.beginPath();ctx.arc(cx,cy,radius*1.17,0,Math.PI*2);
+    ctx.strokeStyle="rgba(120,239,255,.28)";ctx.lineWidth=1.3;ctx.stroke();
+    ctx.shadowBlur=0;
+    const orb=ctx.createRadialGradient(cx-radius*.25,cy-radius*.3,2,cx,cy,radius);
+    orb.addColorStop(0,"#101526");orb.addColorStop(.72,"#080a13");orb.addColorStop(1,"#010207");
+    ctx.beginPath();ctx.arc(cx,cy,radius,0,Math.PI*2);ctx.fillStyle=orb;ctx.fill();
+    ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(cx,cy,radius*1.035,-Math.PI*.93,Math.PI*.34);
+    ctx.strokeStyle="#9bf4ff";ctx.stroke();
+    ctx.beginPath();ctx.arc(cx,cy,radius*1.035,Math.PI*.55,Math.PI*1.32);
+    ctx.strokeStyle="#ff95d8";ctx.stroke();
+    ctx.restore();
+
+    for(let i=0;i<shards.length;i++) {
+      const sh=shards[i];
+      const a=sh.angle+now*.000045*(i%2?1:-1);
+      const radiusNow=sh.orbit+Math.sin(now*.0008+sh.phase)*sh.wobble;
+      const x=cx+Math.cos(a)*radiusNow;
+      const y=cy+Math.sin(a)*radiusNow*.73;
+      drawShard(sh,x,y,a,.48+.42*(.5+.5*Math.sin(now*.001+sh.phase)),now,.7+.35*Math.sin(now*.0009+sh.phase));
+    }
+
+    ctx.textAlign="center";
+    ctx.textBaseline="middle";
+    ctx.shadowColor="#9cf3ff";ctx.shadowBlur=16;
+    ctx.fillStyle="#f2f8ff";
+    ctx.font="800 "+Math.max(19,Math.min(29,W*.075))+"px ui-monospace, SFMono-Regular, Consolas, monospace";
+    ctx.fillText("BAD APPLE",cx,cy-4);
+    ctx.shadowBlur=0;
+    ctx.fillStyle="#a9bfdc";
+    ctx.font="10px ui-monospace, SFMono-Regular, Consolas, monospace";
+    ctx.fillText("P R I S M A T I C   C O L L A P S E",cx,cy+20);
+    ctx.fillStyle="#91a8cf";
+    ctx.font="9px ui-monospace, SFMono-Regular, Consolas, monospace";
+    ctx.fillText("SIGNAL / 03",cx,cy+radius+34);
+  }
+
+  function beginAudioAndVideo() {
+    try {
+      const AudioCtx=window.AudioContext||window.webkitAudioContext;
+      if(AudioCtx) {
+        audioContext=new AudioCtx();
+        audioGain=audioContext.createGain();
+        audioGain.gain.value=0;
+        audioSource=audioContext.createMediaElementSource(video);
+        audioSource.connect(audioGain);
+        audioGain.connect(audioContext.destination);
+        video.muted=false;
+        video.volume=1;
+        const resumed=audioContext.resume();
+        if(resumed&&resumed.catch) resumed.catch(()=>{});
+        const played=video.play();
+        if(played&&played.catch) played.catch(()=>{video.muted=true;});
+        audioReady=true;
+        return;
+      }
+    } catch(_) {}
+    video.muted=true;
+    const played=video.play();
+    if(played&&played.catch) played.catch(()=>{});
+    audioReady=false;
+  }
+
+  function shatter(now) {
+    const W=window.innerWidth,H=window.innerHeight;
+    const progress=clamp((now-startTime)/SHATTER_MS,0,1);
+    const eased=easeOut(progress);
+    drawBackground(now);
+    if(lastSample) drawMosaic(lastSample,clamp((progress-.12)/.62,0,1),now);
+    const cx=W/2,cy=H*.465;
+    for(let i=0;i<shards.length;i++) {
+      const sh=shards[i];
+      const a=sh.angle;
+      const orbit=sh.orbit+eased*(Math.max(W,H)*.6+sh.wobble);
+      const x=cx+Math.cos(a)*orbit;
+      const y=cy+Math.sin(a)*orbit*.73+(progress*progress*(sh.seed-.5)*H*.25);
+      drawShard(sh,x,y,a,easeInOut(1-progress),now,1+progress*1.25);
+    }
+    for(let i=0;i<3;i++) {
+      const r=progress*(Math.min(W,H)*(.24+i*.18));
+      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.strokeStyle=i%2?"rgba(255,135,215,"+(1-progress)*.5+")":"rgba(131,242,255,"+(1-progress)*.65+")";
+      ctx.lineWidth=1.2;ctx.stroke();
+    }
+    const flash=Math.pow(Math.max(0,1-Math.abs(progress-.18)/.18),2)*.16;
+    if(flash>0){ctx.fillStyle="rgba(230,250,255,"+flash+")";ctx.fillRect(0,0,W,H);}
+    if(progress>=1) {
+      state="playing";
+      hint.style.display="none";
+      if(audioContext&&audioGain) {
+        audioContext.resume().catch(()=>{});
+        audioGain.gain.cancelScheduledValues(audioContext.currentTime);
+        audioGain.gain.setTargetAtTime(1,audioContext.currentTime,.08);
+      } else {
+        video.muted=false;
+        video.volume=1;
+      }
+    }
+  }
+
+  function sampleVideo() {
+    if(video.readyState<2||!video.videoWidth||!video.videoHeight) return null;
+    try {
+      sampleCtx.drawImage(video,0,0,sampleW,sampleH);
+      return sampleCtx.getImageData(0,0,sampleW,sampleH).data;
+    } catch(error) {
+      console.warn("Bad Apple sampling failed.",error);
+      return null;
+    }
+  }
+
+  function drawMosaic(data,alpha,now) {
+    if(!data||alpha<=0) return;
+    const W=window.innerWidth,H=window.innerHeight;
+    const cw=frameW/gridW,ch=frameH/gridH;
+    ctx.save();
+    ctx.beginPath();ctx.rect(frameX,frameY,frameW,frameH);ctx.clip();
+    ctx.globalAlpha=alpha;
+    for(let row=0;row<gridH;row++) {
+      for(let col=0;col<gridW;col++) {
+        const x=frameX+col*cw,y=frameY+row*ch;
+        const a=((row+col)&1)===0;
+        const i1=((row*2)*sampleW+col*2)*4;
+        const i2=(((row*2+1)*sampleW)+col*2+1)*4;
+        const i3=((row*2)*sampleW+col*2+1)*4;
+        const i4=(((row*2+1)*sampleW)+col*2)*4;
+        const lum1=data[i1]*.2126+data[i1+1]*.7152+data[i1+2]*.0722;
+        const lum2=data[i2]*.2126+data[i2+1]*.7152+data[i2+2]*.0722;
+        const lum3=data[i3]*.2126+data[i3+1]*.7152+data[i3+2]*.0722;
+        const lum4=data[i4]*.2126+data[i4+1]*.7152+data[i4+2]*.0722;
+        const offset=(row*gridW+col);
+        const drawTriangle=(points,luma,variant)=>{
+          if(luma<122) return;
+          const idx=(offset*7+variant*11)%COLORS.length;
+          ctx.globalAlpha=alpha*clamp(.72+luma/900,.72,1);
+          ctx.beginPath();
+          ctx.moveTo(points[0][0],points[0][1]);
+          ctx.lineTo(points[1][0],points[1][1]);
+          ctx.lineTo(points[2][0],points[2][1]);
+          ctx.closePath();
+          ctx.fillStyle=COLORS[idx];
+          ctx.fill();
+          ctx.lineWidth=.48;
+          ctx.strokeStyle=((offset+variant*5)%13===0)?EDGE_PINK:EDGE_CYAN;
+          ctx.stroke();
+        };
+        if(a) {
+          drawTriangle([[x,y],[x+cw,y],[x,y+ch]],lum1,0);
+          drawTriangle([[x+cw,y],[x+cw,y+ch],[x,y+ch]],lum2,1);
+        } else {
+          drawTriangle([[x,y],[x+cw,y],[x+cw,y+ch]],lum3,0);
+          drawTriangle([[x,y],[x,y+ch],[x+cw,y+ch]],lum4,1);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawPlayback(now) {
+    const W=window.innerWidth,H=window.innerHeight;
+    ctx.fillStyle="#020309";
+    ctx.fillRect(0,0,W,H);
+    if(lastSample) drawMosaic(lastSample,1,now);
+
+    // Tiny corner marks and one traveling scan highlight frame the mosaic without covering it.
+    ctx.lineWidth=.8;
+    ctx.strokeStyle="rgba(112,233,255,.4)";
+    const m=9,len=15;
+    ctx.beginPath();
+    ctx.moveTo(frameX+m,frameY+m+len);ctx.lineTo(frameX+m,frameY+m);ctx.lineTo(frameX+m+len,frameY+m);
+    ctx.moveTo(frameX+frameW-m-len,frameY+m);ctx.lineTo(frameX+frameW-m,frameY+m);ctx.lineTo(frameX+frameW-m,frameY+m+len);
+    ctx.moveTo(frameX+m,frameY+frameH-m-len);ctx.lineTo(frameX+m,frameY+frameH-m);ctx.lineTo(frameX+m+len,frameY+frameH-m);
+    ctx.moveTo(frameX+frameW-m-len,frameY+frameH-m);ctx.lineTo(frameX+frameW-m,frameY+frameH-m);ctx.lineTo(frameX+frameW-m,frameY+frameH-m-len);
+    ctx.stroke();
+    const sweep=((now*.055)%(frameH+34))-17;
+    const lineY=frameY+sweep;
+    if(lineY>frameY&&lineY<frameY+frameH) {
+      const grad=ctx.createLinearGradient(frameX,lineY,frameX+frameW,lineY);
+      grad.addColorStop(0,"rgba(115,240,255,0)");
+      grad.addColorStop(.5,"rgba(115,240,255,.08)");
+      grad.addColorStop(1,"rgba(255,127,215,0)");
+      ctx.fillStyle=grad;ctx.fillRect(frameX,lineY,frameW,1.4);
+    }
+  }
+
+  function tick(now) {
+    if(state==="intro") {
+      drawIntro(now);
+    } else if(state==="shatter") {
+      if(now-lastVideoDraw>=FRAME_UPDATE_MS) {
+        lastVideoDraw=now;
+        const next=sampleVideo();
+        if(next) lastSample=next;
+      }
+      shatter(now);
+    } else if(state==="playing") {
+      if(now-lastVideoDraw>=FRAME_UPDATE_MS) {
+        lastVideoDraw=now;
+        const next=sampleVideo();
+        if(next) lastSample=next;
+      }
+      drawPlayback(now);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function handleInteraction() {
+    if(state!=="intro") {
+      if(state==="playing"&&video.paused) video.play().catch(()=>{});
+      return;
+    }
+    state="shatter";
+    startTime=performance.now();
+    hint.style.display="none";
+    beginAudioAndVideo();
+  }
+
+  video.addEventListener("loadedmetadata",resize);
+  video.addEventListener("canplay",()=>{canPlay=true;});
+  video.addEventListener("error",()=>{errorBox.style.display="block";});
+  document.addEventListener("pointerdown",handleInteraction,{passive:true});
+  window.addEventListener("resize",()=>{resize();initScene();});
+
+  reducedMotion=!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  resize();
+  initScene();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
