@@ -641,7 +641,7 @@
   }
 
   function updateFromCurrentFrame(now) {
-    if(state!=="playing"||now-lastUpdate<78||layoutBusy||!video.videoWidth) return;
+    if(state!=="playing"||now-lastUpdate<55||layoutBusy||!video.videoWidth) return;
     lastUpdate=now;
     layoutBusy=true;
     const sampler=updateFromCurrentFrame.canvas||(updateFromCurrentFrame.canvas=document.createElement("canvas"));
